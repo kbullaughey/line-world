@@ -36,17 +36,32 @@ cmd:option('-size', 10, 'length of world')
 cmd:option('-hidden', 20, 'GRU hidden size')
 cmd:option('-capacity', 5000, 'sample memory capacity')
 cmd:option('-episodes', 10, 'number of episodes to simulate')
-cmd:option('-max-time', 200, 'maximum length of games in clock ticks.')
+cmd:option('-momentum', 0.5, 'momentum')
+cmd:option('-max-time', 75, 'maximum length of games in clock ticks.')
+cmd:option('-rate', 0.1, 'learning rate')
+cmd:option('-save', 'model.t7', 'Filename to save model to.')
+cmd:option('-initial-epsilon', 0.1, 'initial random choice probability, epsilon')
+cmd:option('-final-epsilon', 0.02, 'final random choice probability, epsilon')
+cmd:option('-decay-epsilon-over', 500, 'Number of episodes over which to decay epsilon')
+cmd:option('-gamma', 0.95, 'discounting parameter, gamma')
+cmd:option('-regularization', 1e-05, 'weight-decay regularization')
+cmd:option('-prefix', 'model', 'saved model prefix')
 params = cmd:parse(arg)
 
 sceneLetters = {[-3]="w", [-2]="b", [-1]="d", "D", "B", "W"}
-speeds = {0.2,0.25,0.5}
+--speeds = {0.2,0.25,0.5}
+speeds = {0.5,0.5}
 histLen = 4
 stay = 2
-epsilon = 1
+winReward = 10
+initialEpsilon = params['initial-epsilon']
+finalEpsilon = params['final-epsilon']
+decayOver = params['decay-epsilon-over']
 numActions = 3
 maxTime = params['max-time']
 gameSize = params['size']
+gamma = params['gamma']
+actionLabels = {"left", "stay", "right"}
 
 -- Pretty print a scene using letters
 function sceneString(scene)
@@ -55,6 +70,14 @@ function sceneString(scene)
     s = s .. sceneLetters[scene[i]]
   end
   return s
+end
+
+function dumpVec(label, v)
+--  print(label .. ":")
+--  if v:size(1) > 20 then
+--    v = v:narrow(1,1,20)
+--  end
+--  print(v:view(1,-1))
 end
 
 function waterTiles(env)
@@ -81,11 +104,15 @@ end
 
 -- Initial state of the game
 function firstEnvironment()
+  -- Randomly select whether we start on 1 and end on 10 or the opposite
+  local start, finish =
+    unpack(torch.Tensor{1,gameSize}:index(1,torch.randperm(2):long()):totable())
   local env = {
     -- Width of the scene in tiles
     size = gameSize,
     -- The player's position in [1,size]
-    player = 1,
+    player = start,
+    goal = finish,
     -- Don't draw the boat or player yet
     scene = torch.Tensor{1,-3,-3,-3,-3,-3,-3,-3,-3,-1},
     -- speed is how fast the boat moves in tiles/tick. Can be 0.1, 0.2, or 0.3.
@@ -94,6 +121,7 @@ function firstEnvironment()
     direction = 1,
     -- Actual boat position in the interval (0,1). This excludes the docks.
     boat = 0,
+    gameOver = false,
   }
   -- Pick the boats position.
   env.boat = torch.uniform()
@@ -112,16 +140,20 @@ function firstEnvironment()
   return env
 end
 
-function reward(env)
+function reward(env, oldEnv)
   -- Determine the reward based on where the player is.
   local p = sceneLetters[env.scene[env.player]]
+  local oldP = sceneLetters[oldEnv.scene[oldEnv.player]]
+
   local r = 0
-  if env.player == env.size then
-    r = 1
+  if env.player == env.goal then
+    r = winReward
   elseif p == "W" then
     r = -2
   elseif env.ticks > maxTime then
     r = -1
+  elseif p == "B" and oldEnv ~= "B" then
+    r = 1
   end
   return r
 end
@@ -132,7 +164,7 @@ end
 -- Reward is -2 (fall in water), -1 (time expires), 0, or 1 (win)
 -- If the reward is negative, the game is over.
 function evolve(env, action)
-  local z = {size=env.size, speed=env.speed}
+  local z = {size=env.size, speed=env.speed, goal=env.goal}
   -- See if the player is on the boat.
   local onBoat = sceneLetters[env.scene[env.player]] == "B"
   -- Calculate the new position of the boat.
@@ -166,11 +198,15 @@ function evolve(env, action)
   z.picture = sceneString(z.scene)
   -- Update the clock
   z.ticks = env.ticks + 1
-  return z, reward(z)
+  local r = reward(z, env)
+  if r < 0 or r == winReward then
+    z.gameOver = true
+  end
+  return z, r
 end
 
 -- Interactive episode
-function play()
+function play(simulator)
   local copas = require 'copas'
   local ws = require 'websocket'
   local config = {
@@ -178,8 +214,10 @@ function play()
     protocols = {
       lineworld = function(ws)
         local game = firstEnvironment()
+        print(game)
         local r
         local command
+        local history = {}
         print("have client")
         while true do
           local message = ws:receive()
@@ -191,11 +229,24 @@ function play()
             command = 3
           elseif message == "stay" then
             command = 2
+          elseif message == "propose" then
+            if #history < histLen then
+              command = 2
+            else
+              local x = phi(history)
+              local q = Q(x, simulator.net)
+              local _, bestQ = q:max(2)
+              command = bestQ[1][1]
+            end
           end
           game, r = evolve(game, command)
+          table.insert(history, game)
           ws:send("> " .. game.picture)
+          if command ~= 2 then
+            print(game)
+          end
           command = 2
-          if r ~= 0 then
+          if game.gameOver then
             break
           end
         end
@@ -204,10 +255,8 @@ function play()
           rewardMessage = "You drowned."
         elseif r == -1 then
           rewardMessage = "Time up."
-        elseif r == 1 then
+        elseif r == winReward then
           rewardMessage = "You won!"
-        else
-          error("Invalid reward")
         end
         ws:send(rewardMessage)
         ws:close()
@@ -221,13 +270,13 @@ end
 -- Update x, shifting one vector off the left side, and adding the new vector
 -- on the right.
 function phi(history)
-  local x = torch.Tensor(history[1].size, histLen)
+  local x = torch.Tensor(histLen, history[1].size)
   if #history < histLen then
     error("Insufficient history")
   end
   -- Copy the last `histLen` scenes into x
-  for i=#history-histLen+1, #history do
-    x:select(2,i):copy(history[i].scene)
+  for i=1,histLen do
+    x[i]:copy(history[#history-histLen+i].scene)
   end
   return x
 end
@@ -238,47 +287,92 @@ seqLengths = torch.Tensor(params.batch):fill(histLen)
 
 -- Sample minibatch with replacement
 function minibatch(D, batchSize)
-  -- This will be three tensors, x(t), x(t+1), actions, rewards, seqLengths
+  -- This will be three tensors, x(t), x(t+1), actions, rewards
   local example = {
     torch.Tensor(batchSize, histLen, gameSize),
     torch.Tensor(batchSize, histLen, gameSize),
+    -- This will be a one-hot encoding.
+    torch.zeros(batchSize,numActions),
     torch.Tensor(batchSize),
-    torch.Tensor(batchSize),
-    seqLengths,
   }
   for b=1,batchSize do
-    local w = math.floor(torch.uniform() * #D) + 1
-    local xt, a, r, xtp1 = unpack(D[w])
+    local w, xt, a, r, xtp1
+    local accept = false
+    while not accept do
+      w = math.floor(torch.uniform() * #D) + 1
+      xt, a, r, xtp1 = unpack(D[w])
+      if r == 10 then
+        accept = true
+      else
+        if torch.uniform() < 0.1 then
+          accept = true
+        end
+      end
+    end
     example[1][b]:copy(xt)
     example[2][b]:copy(xtp1)
-    example[3][b] = a
-    example[4][b] = a
+    example[3][b][a] = 1
+    example[4][b] = r
   end
   return example
+end
+
+-- Only regularize linear transform weight parameters, not bias parameters. I make
+-- this judgement based on whether the parameter tensor is 1D or 2D.
+function regularizationMask(net)
+  local mask = torch.zeros(net.par:size(1))
+  local params = net:parameters()
+  local offset = 1
+  for i=1,#params do
+    local dims = params[i]:dim()
+    if dims == 2 then
+      local mx_size = params[i]:size(1) * params[i]:size(2)
+      mask:narrow(1, offset, mx_size):fill(1)
+      offset = offset + mx_size
+    else
+      local len = params[i]:size(1)
+      offset = offset + len
+    end
+  end
+  if offset-1 ~= net.par:size(1) then
+    error("unexpected length")
+  end
+  return mask
 end
 
 function makeNet(par)
   local ns = {}
   -- The net should receive a tuple {x,seqLengths}
-  ns.inTuple = nn.Identity()
+  ns.inTuple = nn.Identity()()
   ns.chainMod = lstm.GRUChain(gameSize, {par.hidden}, histLen)
   ns.chainOut = ns.chainMod(ns.inTuple)
-  ns.Q = nn.Linear(par.hidden, numActions)
+  ns.Q = nn.Linear(par.hidden, numActions)(ns.chainOut)
   ns.net = nn.gModule({ns.inTuple}, {ns.Q})
   -- Need to reenable sharing after getParameters(), which broke my sharing.
   ns.net.par, ns.net.gradPar = ns.net:getParameters()
   ns.chainMod:setupSharing()
   ns.net.par:uniform(-0.05, 0.05)
   ns.net.gradPar:zero()
+  -- Additional step to condition on action
+  ns.givenActionInput = nn.Identity()()
+  ns.givenActionMasked = nn.CMulTable()(ns.givenActionInput)
+  ns.givenActionSum = nn.Sum(1, 1)(ns.givenActionMasked)
+  ns.givenAction = nn.gModule({ns.givenActionInput},{ns.givenActionSum})
   return ns
 end
 
 -- This will return a vector of scores over actions.
 function Q(x, net)
-  return net:forward(x)
+  if x:dim() == 2 then
+    x = x:view(1,histLen,gameSize)
+  end
+  local lengths = seqLengths:narrow(1,1,x:size(1))
+  return net:forward({x,lengths})
 end
 
 function train(par)
+  local learningRate = par['rate']
+  local momentum = par['momentum']
   local D = {}
   local M = par['episodes']
   local T = par['max-time']+5
@@ -287,7 +381,22 @@ function train(par)
   -- Current index into D
   local d = 1
   local model = makeNet(par)
+  local theta = model.net.par
+  local gradTheta = model.net.gradPar
+  -- Only regularize non-bias parameters
+  local weightDecay = par['regularization']
+  local wdMask = regularizationMask(model.net)
+  local wd = wdMask:mul(weightDecay)
+  local criterion = nn.MSECriterion()
+  local runningError = 0
+  -- Just for debugging traces
+  local softmax = nn.SoftMax()
+  local epsilon = initialEpsilon
   for i=1,M do
+    if i < decayOver then
+      epsilon = initialEpsilon + (i-1)*(finalEpsilon - initialEpsilon)/decayOver
+    end
+    print("episode: " .. i .. ", epsilon: " .. epsilon)
     -- Run the game forward enough to get histLen images
     local s = {firstEnvironment()}
     for t=2,histLen do
@@ -300,26 +409,90 @@ function train(par)
       xt = phi(s)
       local u = torch.uniform()
       local action
+      local wasRandom = ''
       if u < epsilon then
         -- Random action
         action = math.floor(torch.uniform(1,4))
+        wasRandom = 'R'
       else
-        local q = Q(xt, model)
-        local _, bestQ = q:max(1)
+        local q = Q(xt, model.net)
+        dumpVec("softmax(q)", softmax:forward(q))
+        local _, bestQ = q:max(2)
+        action = bestQ[1][1]
       end
+      print("> " .. s[t].picture .. " : " .. action .. wasRandom)
       s[t+1], r = evolve(s[t], action)
+      print("> " .. s[t+1].picture .. ', reward: ' .. r)
       xtp1 = phi(s)
       D[d] = {xt, action, r, xtp1}
       d = (d % capacity) + 1
       local example = minibatch(D, batchSize)
+      -- Since the targets are a function of the parameters, we compute those first
+      -- before the predictions so we don't mess up our nerual net state during
+      -- the forward and backward passes.
+      local targets = Q(example[2], model.net):max(2)
+      dumpVec("reward", example[4])
+      local nonTerminal =
+        torch.gt(torch.eq(example[4],0):double() + torch.eq(example[4],1):double(),0):double()
+      dumpVec("nonTerminal", nonTerminal)
+      print("num non-terminal: " .. nonTerminal:sum())
+      local discountedFuture = nonTerminal:cmul(targets):mul(gamma)
+      dumpVec("discountedFuture", discountedFuture)
+      local y = example[4] + discountedFuture
+      dumpVec("y", y)
+      gradTheta:zero()
+      -- Forward pass
+      local predictions = model.net:forward({example[1],seqLengths})
+      local givenAction = model.givenAction:forward({predictions, example[3]})
+      dumpVec("givenAction", givenAction)
+      if torch.eq(example[4], 1):double():sum() > 0 then
+        print("batch includes getting on boat")
+        print(predictions:narrow(1,1,8))
+      end
+      local err = criterion:forward(givenAction, y)
+      -- Backward pass
+      local g = criterion:backward(givenAction, y)
+      dumpVec("gradGivenAction", g)
+      g = model.givenAction:backward({predictions, example[3]}, g)
+      model.net:backward({example[1],seqLengths}, g[1])
+
+      -- Apply weight decay
+      gradTheta:add(torch.cmul(wd, theta))
+      local update = torch.zeros(theta:size(1))
+      -- Use momentum, but scaling down the update vector if it's to big, this
+      -- helps with exploding gradients.
+      update:mul(momentum):add(-learningRate, gradTheta)
+      local norm = update:norm()
+      if norm > 1 then
+        update:mul(1/norm)
+      end
+      theta:add(update)
+      runningError = 0.99 * runningError + 0.01 * err
+      print("runningError: " .. runningError .. ", err: " .. err ..
+        ", update: " .. update:norm() .. ", |theta|: " .. theta:norm())
+
+      -- If the game is over, start the next episode
+      if s[t+1].gameOver then
+        print("final reward:" .. r)
+        break
+      end
+    end
+    if i % 500 == 1 then
+      local fn = params.prefix .. "-" .. i .. ".t7"
+      torch.save(fn, model)
     end
   end
+  return model
 end
 
 if params.mode == 'play' then
   play()
 elseif params.mode == "train" then
-  train(params)
+  model = train(params)
+  torch.save(params.save, model)
+elseif params.mode == "simulate" then
+  model = torch.load(params.save)
+  play(model)
 else
   print("nothing to do.")
 end
