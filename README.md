@@ -1,4 +1,4 @@
-Training with these parameters results in perfect play:
+Training with these parameters results in near perfect play:
 
     ./toy.lua -mode train -size 7 -episodes 4000 > train.out
 

@@ -50,9 +50,8 @@ cmd:option('-prefix', 'model', 'saved model prefix')
 params = cmd:parse(arg)
 
 sceneLetters = {[-3]="w", [-2]="b", [-1]="d", "D", "B", "W"}
---speeds = {0.2,0.25,0.5}
-speeds = {0.5,0.5}
-histLen = 4
+speeds = {0.3,0.5,0.7}
+histLen = 5
 stay = 2
 winReward = 10
 initialEpsilon = params['initial-epsilon']
@@ -71,14 +70,6 @@ function sceneString(scene)
     s = s .. sceneLetters[scene[i]]
   end
   return s
-end
-
-function dumpVec(label, v)
---  print(label .. ":")
---  if v:size(1) > 20 then
---    v = v:narrow(1,1,20)
---  end
---  print(v:view(1,-1))
 end
 
 function waterTiles(env)
@@ -380,7 +371,8 @@ function test(model, par)
       local action = bestQ[1][1]
       s[t+1], r = evolve(s[t], action)
       if not par['quiet'] then
-        print("> " .. s[t].picture .. " took " .. action .. " to " .. s[t+1].picture .. ', reward: ' .. r)
+        print("> " .. s[t].picture .. " took " .. action .. " to " .. s[t+1].picture ..
+          ', reward: ' .. r)
         print(nn.SoftMax():forward(q))
       end
       -- If the game is over, start the next episode
@@ -416,13 +408,11 @@ function train(par)
   local criterion = nn.MSECriterion()
   local runningError = 0
   -- Just for debugging traces
-  local softmax = nn.SoftMax()
   local epsilon = initialEpsilon
   for i=1,M do
     if i < decayOver then
       epsilon = initialEpsilon + (i-1)*(finalEpsilon - initialEpsilon)/decayOver
     end
-    --print("episode: " .. i .. ", epsilon: " .. epsilon)
     -- Run the game forward enough to get histLen images
     local s = {firstEnvironment()}
     for t=2,histLen do
@@ -447,10 +437,8 @@ function train(par)
         action = bestQ[1][1]
       end
       s[t+1], r = evolve(s[t], action)
-      print("> " .. s[t].picture .. " took " .. action .. wasRandom .. " to " .. s[t+1].picture .. ', reward: ' .. r .. " episode " .. i .. " timestep " .. t)
-      if q ~= nil then
-        print(softmax:forward(q))
-      end
+      print("> " .. s[t].picture .. " took " .. action .. wasRandom .. " to " ..
+        s[t+1].picture .. ', reward: ' .. r .. " episode " .. i .. " timestep " .. t)
       xtp1 = phi(s)
       D[d] = {xt, action, r, xtp1}
       d = (d % capacity) + 1
@@ -467,10 +455,6 @@ function train(par)
       -- Forward pass
       local predictions = model.net:forward(example[1])
       local givenAction = model.givenAction:forward({predictions, example[3]})
-      if torch.eq(example[4], 1):double():sum() > 0 then
-        --print("batch includes getting on boat")
-        --print(predictions:narrow(1,1,8))
-      end
       local err = criterion:forward(givenAction, y)
       -- Backward pass
       local g = criterion:backward(givenAction, y)
