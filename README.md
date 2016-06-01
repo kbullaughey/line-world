@@ -2,6 +2,11 @@
 
 This repo contains a Reinforcement Learning demo that was the basis for my own learning about Q-learning based RL. I built a very small grid-world game that can be played interactively or used as an emulator for producing training data for RL. I also provide a neural net implementation that can easily master this game.
 
+I followed the [Learning to play Atari][1] paper and taught myself RL from [Sutton's book][2].
+
+[1]: http://arxiv.org/pdf/1312.5602v1.pdf
+[2]: https://webdocs.cs.ualberta.ca/~sutton/book/ebook/node1.html
+
 The machine learning part is written in Lua using Torch, and the game is made playable in a web browser using a javascript server running on node that talks to the Lua backend over websockets.
 
 # Game design
@@ -28,6 +33,12 @@ Here's an example starting state:
 
     dwwwwwbwwD
 
+The corresponding numerical vector would be:
+
+    (-1, -3, -3, -3, -3, -3, -2, -3, -3, 1)
+
+You can think of this like an image with one row of pixels.
+
 This means that the player is on the right-hand dock (hence the capital letter). If the player were to jump into the water you would see:
 
     dwwwwwbwWd
@@ -40,6 +51,8 @@ There are three possible terminal reward outcomes and one intermediate reward:
 0. -1: Running out of time
 0. +10: Getting to the far dock
 0. +1: Getting on the boat (intermediate reward)
+
+At any given time step, there are three possible actions: left, right, and stay.
 
 Here's an example gameplay:
 
@@ -88,6 +101,16 @@ Then, concurrently you'll need to start the node server (this assumes you have r
 
 The lua backend listens on port 2601 for the browser, and the browser serves the interactive game on port 2600. Then you can go to [localhost:2600](http://localhost:2600/) to play the game.
 
+# Modeling details
+
+This RL toy uses Q-learning, and thus the neural net serves as a function approximator to `Q(s,a)` where `s` is the state and `a` is the action. In practice, the neural net outputs three values, one for each possible action. Thus only one forward pass is needed to compute the `Q` values for the three possible actions.
+
+The neural net gets only a partial representation of the full state. Specifically, it gets a tensor of size (K,L) where K is the number of image frames to present and L is the length of the line world. Each row corresponds to a 1D image as described above. The first row is the actual image, and the subsequent rows are image differences (i.e., `x[t+t] - x[t]`).
+
+Importantly, it doesn't know the speed of the boat or anything about what the goal of the game is or anything about rivers, docks, boats, drowning, or the like.
+
+The neural net is a simple feed-forward network with one hidden layer and Tanh non-linearities. It treats the whole image as one long vector and is fully connected.
+
 # Training a model
 
 Training with these parameters results in decent play (~95% win rate):
@@ -96,7 +119,11 @@ Training with these parameters results in decent play (~95% win rate):
 
 Testing can be done as follows:
 
-    ./toy.lua -mode test -save model.t7 -episodes 1000 -quiet
+    ./toy.lua -mode train -episodes 2500 -prefix one-speed -speeds 0.5 > one-speed.out
+
+One of the more challenging aspects of this game is that the speed varies. If a single speed is used, we get a 100% win rate (1000/1000):
+
+    ./toy.lua -mode test -save one-speed.t7 -episodes 1000 -speeds 0.5 -quiet
 
 # Watching the AI play
 

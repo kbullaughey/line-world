@@ -47,11 +47,14 @@ cmd:option('-decay-epsilon-over', 1000, 'Number of episodes over which to decay 
 cmd:option('-gamma', 0.97, 'discounting parameter, gamma')
 cmd:option('-regularization', 1e-05, 'weight-decay regularization')
 cmd:option('-prefix', 'model', 'saved model prefix')
+cmd:option('-speeds', '0.3,0.5,0.7', 'different speeds of the boat')
+cmd:option('-frames', 6, 'number of frames to include')
 params = cmd:parse(arg)
 
 sceneLetters = {[-3]="w", [-2]="b", [-1]="d", "D", "B", "W"}
-speeds = {0.3,0.5,0.7}
-histLen = 5
+speeds = tablex.map(function(x) return tonumber(x) end, stringx.split(params.speeds, ","))
+speeds = torch.Tensor(speeds)
+histLen = params['frames']
 stay = 2
 winReward = 10
 initialEpsilon = params['initial-epsilon']
@@ -118,7 +121,7 @@ function firstEnvironment()
   -- Pick the boats position.
   env.boat = torch.uniform()
   -- Pick a speed
-  env.speed = speeds[math.floor(torch.uniform(1,3))]
+  env.speed = speeds[torch.randperm(speeds:size(1))[1]]
   -- Switch direction if prob 0.5
   if torch.uniform() < 0.5 then
     env.direction = -1
@@ -380,7 +383,9 @@ function test(model, par)
         if r == winReward then
           gamesWon = gamesWon + 1
         end
-        print("final reward: " .. r .. " iter " .. t)
+        if not par['quiet'] then
+          print("final reward: " .. r .. " iter " .. t)
+        end
         break
       end
     end
