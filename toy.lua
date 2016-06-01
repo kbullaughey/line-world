@@ -21,9 +21,9 @@
 --
 -- An environment has the following structure:
 --
--- (size, speed, player, boat, direction,
+-- (size, speed, player, boat, direction, goal)
 
-require 'lstm'
+require 'nngraph'
 
 cmd = torch.CmdLine()
 cmd:text()
@@ -31,23 +31,22 @@ cmd:text('Toy game for reinfocement learning')
 cmd:text()
 cmd:text('Options')
 cmd:option('-mode', '', 'start a server for playing in a web browser or training (play|train|test)')
-cmd:option('-batch', 8, 'batch size')
+cmd:option('-batch', 64, 'batch size')
 cmd:option('-size', 10, 'length of world')
-cmd:option('-hidden', 20, 'hidden size')
+cmd:option('-hidden', 200, 'hidden size')
 cmd:option('-capacity', 5000, 'sample memory capacity')
 cmd:option('-episodes', 10, 'number of episodes to simulate')
 cmd:option('-quiet', false, 'produce less output')
 cmd:option('-momentum', 0.5, 'momentum')
 cmd:option('-max-time', 75, 'maximum length of games in clock ticks.')
-cmd:option('-rate', 0.1, 'learning rate')
+cmd:option('-rate', 0.01, 'learning rate')
 cmd:option('-save', '', 'Filename to save model to (or read from when -mode test).')
 cmd:option('-initial-epsilon', 0.1, 'initial random choice probability, epsilon')
 cmd:option('-final-epsilon', 0.02, 'final random choice probability, epsilon')
-cmd:option('-decay-epsilon-over', 500, 'Number of episodes over which to decay epsilon')
-cmd:option('-gamma', 0.99, 'discounting parameter, gamma')
+cmd:option('-decay-epsilon-over', 1000, 'Number of episodes over which to decay epsilon')
+cmd:option('-gamma', 0.97, 'discounting parameter, gamma')
 cmd:option('-regularization', 1e-05, 'weight-decay regularization')
 cmd:option('-prefix', 'model', 'saved model prefix')
-cmd:option('-simple', false, 'whether to use the simple feed-forward model')
 params = cmd:parse(arg)
 
 sceneLetters = {[-3]="w", [-2]="b", [-1]="d", "D", "B", "W"}
@@ -284,10 +283,6 @@ function phi(history)
   return x
 end
 
--- The seqLengths will be a batchSize-length vector of the constant, histSize. This
--- is an artifact of how I've implemented GRUChain.
-seqLengths = torch.Tensor(params.batch):fill(histLen)
-
 -- Sample minibatch with replacement
 function minibatch(D, batchSize)
   -- This will be three tensors, x(t), x(t+1), actions, rewards
@@ -343,37 +338,14 @@ function regularizationMask(net)
   return mask
 end
 
-function makeSimpleNet(par)
+function makeNet(par)
   local ns = {}
-  -- The net should receive a tuple {x,seqLengths}
-  ns.inTuple = nn.Identity()()
-  ns.x = nn.SelectTable(1)(ns.inTuple)
+  ns.x = nn.Identity()()
   ns.xr = nn.Reshape(gameSize*histLen)(ns.x)
   ns.h = nn.Tanh()(nn.Linear(gameSize*histLen, par.hidden)(ns.xr))
   ns.Q = nn.Linear(par.hidden, numActions)(ns.h)
-  ns.net = nn.gModule({ns.inTuple}, {ns.Q})
+  ns.net = nn.gModule({ns.x}, {ns.Q})
   ns.net.par, ns.net.gradPar = ns.net:getParameters()
-  ns.net.par:uniform(-0.05, 0.05)
-  ns.net.gradPar:zero()
-  -- Additional step to condition on action
-  ns.givenActionInput = nn.Identity()()
-  ns.givenActionMasked = nn.CMulTable()(ns.givenActionInput)
-  ns.givenActionSum = nn.Sum(1, 1)(ns.givenActionMasked)
-  ns.givenAction = nn.gModule({ns.givenActionInput},{ns.givenActionSum})
-  return ns
-end
-
-function makeNet(par)
-  local ns = {}
-  -- The net should receive a tuple {x,seqLengths}
-  ns.inTuple = nn.Identity()()
-  ns.chainMod = lstm.GRUChain(gameSize, {par.hidden}, histLen)
-  ns.chainOut = ns.chainMod(ns.inTuple)
-  ns.Q = nn.Linear(par.hidden, numActions)(ns.chainOut)
-  ns.net = nn.gModule({ns.inTuple}, {ns.Q})
-  -- Need to reenable sharing after getParameters(), which broke my sharing.
-  ns.net.par, ns.net.gradPar = ns.net:getParameters()
-  ns.chainMod:setupSharing()
   ns.net.par:uniform(-0.05, 0.05)
   ns.net.gradPar:zero()
   -- Additional step to condition on action
@@ -389,8 +361,7 @@ function Q(x, net)
   if x:dim() == 2 then
     x = x:view(1,histLen,gameSize)
   end
-  local lengths = seqLengths:narrow(1,1,x:size(1))
-  return net:forward({x,lengths})
+  return net:forward(x)
 end
 
 function test(model, par)
@@ -435,12 +406,7 @@ function train(par)
   local batchSize = par['batch']
   -- Current index into D
   local d = 1
-  local model
-  if par['simple'] then
-    model = makeSimpleNet(par)
-  else
-    model = makeNet(par)
-  end
+  local model = makeNet(par)
   local theta = model.net.par
   local gradTheta = model.net.gradPar
   -- Only regularize non-bias parameters
@@ -499,7 +465,7 @@ function train(par)
       local y = example[4] + discountedFuture
       gradTheta:zero()
       -- Forward pass
-      local predictions = model.net:forward({example[1],seqLengths})
+      local predictions = model.net:forward(example[1])
       local givenAction = model.givenAction:forward({predictions, example[3]})
       if torch.eq(example[4], 1):double():sum() > 0 then
         --print("batch includes getting on boat")
@@ -509,7 +475,7 @@ function train(par)
       -- Backward pass
       local g = criterion:backward(givenAction, y)
       g = model.givenAction:backward({predictions, example[3]}, g)
-      model.net:backward({example[1],seqLengths}, g[1])
+      model.net:backward(example[1], g[1])
 
       -- Apply weight decay
       gradTheta:add(torch.cmul(wd, theta))
