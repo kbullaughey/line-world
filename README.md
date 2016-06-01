@@ -132,6 +132,6 @@ To watch a trained model play, launch the lua backend using the `simulate` mode 
     ./toy.lua -mode simulate -save model.t7
 
 Then after making sure the node server is running, open the web browser
-to [localhost:2600](http://localhost:2600/ai).
+to [localhost:2600/ai](http://localhost:2600/ai).
 
 
