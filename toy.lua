@@ -24,6 +24,7 @@
 -- (size, speed, player, boat, direction, goal)
 
 require 'nngraph'
+emulator = require './emulator'
 
 cmd = torch.CmdLine()
 cmd:text()
@@ -51,12 +52,10 @@ cmd:option('-speeds', '0.3,0.5,0.7', 'different speeds of the boat')
 cmd:option('-frames', 6, 'number of frames to include')
 params = cmd:parse(arg)
 
-sceneLetters = {[-3]="w", [-2]="b", [-1]="d", "D", "B", "W"}
 speeds = tablex.map(function(x) return tonumber(x) end, stringx.split(params.speeds, ","))
 speeds = torch.Tensor(speeds)
 histLen = params['frames']
 stay = 2
-winReward = 10
 initialEpsilon = params['initial-epsilon']
 finalEpsilon = params['final-epsilon']
 decayOver = params['decay-epsilon-over']
@@ -64,139 +63,7 @@ numActions = 3
 maxTime = params['max-time']
 gameSize = params['size']
 gamma = params['gamma']
-actionLabels = {"left", "stay", "right"}
-
--- Pretty print a scene using letters
-function sceneString(scene)
-  local s = ""
-  for i=1,scene:size(1) do
-    s = s .. sceneLetters[scene[i]]
-  end
-  return s
-end
-
-function waterTiles(env)
-  return env.size - 2
-end
-
--- Discrete position of the boat.
-function boatTile(env)
-  return 2+math.floor(env.boat*waterTiles(env))
-end
-
--- Return a tensor representing the visual display.
-function renderScene(env)
-  local scene = torch.Tensor(env.size):fill(-3)
-  -- Add the docks
-  scene[1] = -1
-  scene[env.size] = -1
-  -- Put the boat into the scene.
-  scene[boatTile(env)] = -2
-  -- Put the player into the scene.
-  scene[env.player] = math.abs(scene[env.player])
-  return scene
-end
-
--- Initial state of the game
-function firstEnvironment()
-  -- Randomly select whether we start on 1 and end on 10 or the opposite
-  local start, finish =
-    unpack(torch.Tensor{1,gameSize}:index(1,torch.randperm(2):long()):totable())
-  local env = {
-    -- Width of the scene in tiles
-    size = gameSize,
-    -- The player's position in [1,size]
-    player = start,
-    goal = finish,
-    -- Don't draw the boat or player yet
-    scene = torch.Tensor{1,-3,-3,-3,-3,-3,-3,-3,-3,-1},
-    -- speed is how fast the boat moves in tiles/tick. Can be 0.1, 0.2, or 0.3.
-    speed = 0,
-    -- Boat direction can be either 1 (right) or -1 (left)
-    direction = 1,
-    -- Actual boat position in the interval (0,1). This excludes the docks.
-    boat = 0,
-    gameOver = false,
-  }
-  -- Pick the boats position.
-  env.boat = torch.uniform()
-  -- Pick a speed
-  env.speed = speeds[torch.randperm(speeds:size(1))[1]]
-  -- Switch direction if prob 0.5
-  if torch.uniform() < 0.5 then
-    env.direction = -1
-  end
-  -- Clock ticks
-  env.ticks = 0
-  -- Render the scene
-  env.scene = renderScene(env)
-  -- Also privide the string representation
-  env.picture = sceneString(env.scene)
-  return env
-end
-
-function reward(env, oldEnv)
-  -- Determine the reward based on where the player is.
-  local p = sceneLetters[env.scene[env.player]]
-  local oldP = sceneLetters[oldEnv.scene[oldEnv.player]]
-
-  local r = 0
-  if env.player == env.goal then
-    r = winReward
-  elseif p == "W" then
-    r = -2
-  elseif env.ticks > maxTime then
-    r = -1
-  elseif p == "B" and oldP ~= "B" then
-    r = 1
-  end
-  return r
-end
-
--- Advance the game forward one click.
--- action can be left,stay,right coded as 1,2,3
--- returns a new env, and a reward.
--- Reward is -2 (fall in water), -1 (time expires), 0, or 1 (win)
--- If the reward is negative, the game is over.
-function evolve(env, action)
-  local z = {size=env.size, speed=env.speed, goal=env.goal}
-  -- Calculate the players new position.
-  z.player = env.player + (action-2)
-  if z.player <= 0 then
-    z.player = 1
-  elseif z.player > z.size then
-    z.player = z.size
-  end
-  -- See if the player is on the boat.
-  local onBoat = sceneLetters[env.scene[z.player]] == "B"
-  -- Calculate the new position of the boat.
-  z.boat = env.boat + env.speed/waterTiles(env)*env.direction
-  -- Reflect the boat away from the edges if necessary, in which case
-  -- we switch the direction.
-  if z.boat < 0 then
-    z.boat = (-1) * z.boat
-    z.direction = (-1) * env.direction
-  elseif z.boat > 1 then
-    z.boat = 2 - z.boat
-    z.direction = (-1) * env.direction
-  else
-    z.direction = env.direction
-  end
-  -- If the player is on the boat, update his position to the boat's new position.
-  if onBoat then
-    z.player = boatTile(z)
-  end
-  -- Render the new scene.
-  z.scene = renderScene(z)
-  z.picture = sceneString(z.scene)
-  -- Update the clock
-  z.ticks = env.ticks + 1
-  local r = reward(z, env)
-  if r < 0 or r == winReward then
-    z.gameOver = true
-  end
-  return z, r
-end
+emulator.parameterize(gameSize, speeds, maxTime)
 
 -- Interactive episode
 function play(simulator)
@@ -206,7 +73,7 @@ function play(simulator)
     port = 2601,
     protocols = {
       lineworld = function(ws)
-        local game = firstEnvironment()
+        local game = emulator.firstEnvironment()
         print(game)
         local r
         local command
@@ -232,7 +99,7 @@ function play(simulator)
               command = bestQ[1][1]
             end
           end
-          game, r = evolve(game, command)
+          game, r = emulator.evolve(game, command)
           table.insert(history, game)
           ws:send("> " .. game.picture)
           if command ~= 2 then
@@ -248,7 +115,7 @@ function play(simulator)
           rewardMessage = "You drowned."
         elseif r == -1 then
           rewardMessage = "Time up."
-        elseif r == winReward then
+        elseif r == emulator.winReward then
           rewardMessage = "You won!"
         end
         ws:send(rewardMessage)
@@ -363,16 +230,16 @@ function test(model, par)
   local T = par['max-time']+5
   local gamesWon = 0
   for i=1,M do
-    local s = {firstEnvironment()}
+    local s = {emulator.firstEnvironment()}
     for t=2,histLen do
-      s[t] = evolve(s[t-1], stay)
+      s[t] = emulator.evolve(s[t-1], stay)
     end
     for t=histLen,T do
       local xt = phi(s)
       local q = Q(xt, model.net)
       local _, bestQ = q:max(2)
       local action = bestQ[1][1]
-      s[t+1], r = evolve(s[t], action)
+      s[t+1], r = emulator.evolve(s[t], action)
       if not par['quiet'] then
         print("> " .. s[t].picture .. " took " .. action .. " to " .. s[t+1].picture ..
           ', reward: ' .. r)
@@ -380,7 +247,7 @@ function test(model, par)
       end
       -- If the game is over, start the next episode
       if s[t+1].gameOver then
-        if r == winReward then
+        if r == emulator.winReward then
           gamesWon = gamesWon + 1
         end
         if not par['quiet'] then
@@ -419,9 +286,9 @@ function train(par)
       epsilon = initialEpsilon + (i-1)*(finalEpsilon - initialEpsilon)/decayOver
     end
     -- Run the game forward enough to get histLen images
-    local s = {firstEnvironment()}
+    local s = {emulator.firstEnvironment()}
     for t=2,histLen do
-      s[t] = evolve(s[t-1], stay)
+      s[t] = emulator.evolve(s[t-1], stay)
     end
     local xt
     local xtp1
@@ -441,7 +308,7 @@ function train(par)
         local _, bestQ = q:max(2)
         action = bestQ[1][1]
       end
-      s[t+1], r = evolve(s[t], action)
+      s[t+1], r = emulator.evolve(s[t], action)
       print("> " .. s[t].picture .. " took " .. action .. wasRandom .. " to " ..
         s[t+1].picture .. ', reward: ' .. r .. " episode " .. i .. " timestep " .. t)
       xtp1 = phi(s)
