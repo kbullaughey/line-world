@@ -50,8 +50,10 @@ cmd:option('-regularization', 1e-05, 'weight-decay regularization')
 cmd:option('-prefix', 'model', 'saved model prefix')
 cmd:option('-speeds', '0.3,0.5,0.7', 'different speeds of the boat')
 cmd:option('-frames', 6, 'number of frames to include')
+cmd:option('-update-every', 1, 'How often to update the parameters (int >= 1)')
 params = cmd:parse(arg)
 
+startedAt = os.time()
 speeds = tablex.map(function(x) return tonumber(x) end, stringx.split(params.speeds, ","))
 speeds = torch.Tensor(speeds)
 histLen = params['frames']
@@ -264,6 +266,7 @@ function train(par)
   local D = {}
   local M = par['episodes']
   local T = par['max-time']+5
+  local updateFreq = par['update-every']
   local capacity = par['capacity']
   local batchSize = par['batch']
   -- Current index into D
@@ -313,39 +316,41 @@ function train(par)
       xtp1 = phi(s)
       D[d] = {xt, action, r, xtp1}
       d = (d % capacity) + 1
-      local example = minibatch(D, batchSize)
-      -- Since the targets are a function of the parameters, we compute those first
-      -- before the predictions so we don't mess up our nerual net state during
-      -- the forward and backward passes.
-      local targets = Q(example[2], model.net):max(2)
-      local nonTerminal =
-        torch.gt(torch.eq(example[4],0):double() + torch.eq(example[4],1):double(),0):double()
-      local discountedFuture = nonTerminal:cmul(targets):mul(gamma)
-      local y = example[4] + discountedFuture
-      gradTheta:zero()
-      -- Forward pass
-      local predictions = model.net:forward(example[1])
-      local givenAction = model.givenAction:forward({predictions, example[3]})
-      local err = criterion:forward(givenAction, y)
-      -- Backward pass
-      local g = criterion:backward(givenAction, y)
-      g = model.givenAction:backward({predictions, example[3]}, g)
-      model.net:backward(example[1], g[1])
-
-      -- Apply weight decay
-      gradTheta:add(torch.cmul(wd, theta))
-      local update = torch.zeros(theta:size(1))
-      -- Use momentum, but scaling down the update vector if it's to big, this
-      -- helps with exploding gradients.
-      update:mul(momentum):add(-learningRate, gradTheta)
-      local norm = update:norm()
-      if norm > 1 then
-        update:mul(1/norm)
+      if (d-1) % updateFreq == 0 then
+        local example = minibatch(D, batchSize)
+        -- Since the targets are a function of the parameters, we compute those first
+        -- before the predictions so we don't mess up our nerual net state during
+        -- the forward and backward passes.
+        local targets = Q(example[2], model.net):max(2)
+        local nonTerminal =
+          torch.gt(torch.eq(example[4],0):double() + torch.eq(example[4],1):double(),0):double()
+        local discountedFuture = nonTerminal:cmul(targets):mul(gamma)
+        local y = example[4] + discountedFuture
+        gradTheta:zero()
+        -- Forward pass
+        local predictions = model.net:forward(example[1])
+        local givenAction = model.givenAction:forward({predictions, example[3]})
+        local err = criterion:forward(givenAction, y)
+        -- Backward pass
+        local g = criterion:backward(givenAction, y)
+        g = model.givenAction:backward({predictions, example[3]}, g)
+        model.net:backward(example[1], g[1])
+  
+        -- Apply weight decay
+        gradTheta:add(torch.cmul(wd, theta))
+        local update = torch.zeros(theta:size(1))
+        -- Use momentum, but scaling down the update vector if it's to big, this
+        -- helps with exploding gradients.
+        update:mul(momentum):add(-learningRate, gradTheta)
+        local norm = update:norm()
+        if norm > 1 then
+          update:mul(1/norm)
+        end
+        theta:add(update)
+        runningError = 0.99 * runningError + 0.01 * err
+        print("runningError: " .. runningError .. ", err: " .. err ..
+          ", update: " .. update:norm() .. ", |theta|: " .. theta:norm())
       end
-      theta:add(update)
-      runningError = 0.99 * runningError + 0.01 * err
-      print("runningError: " .. runningError .. ", err: " .. err ..
-        ", update: " .. update:norm() .. ", |theta|: " .. theta:norm())
 
       -- If the game is over, start the next episode
       if s[t+1].gameOver then
@@ -384,5 +389,8 @@ elseif params.mode == "simulate" then
 else
   print("nothing to do.")
 end
+
+endedAt = os.time()
+print("execution took " .. endedAt - startedAt .. " seconds")
 
 -- END
