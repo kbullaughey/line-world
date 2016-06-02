@@ -60,10 +60,8 @@ initialEpsilon = params['initial-epsilon']
 finalEpsilon = params['final-epsilon']
 decayOver = params['decay-epsilon-over']
 numActions = 3
-maxTime = params['max-time']
 gameSize = params['size']
-gamma = params['gamma']
-emulator.parameterize(gameSize, speeds, maxTime)
+emulator.parameterize(gameSize, speeds, params['max-time'])
 
 -- Interactive episode
 function play(simulator)
@@ -275,6 +273,7 @@ function train(par)
   local gradTheta = model.net.gradPar
   -- Only regularize non-bias parameters
   local weightDecay = par['regularization']
+  local gamma = par['gamma']
   local wdMask = regularizationMask(model.net)
   local wd = wdMask:mul(weightDecay)
   local criterion = nn.MSECriterion()
