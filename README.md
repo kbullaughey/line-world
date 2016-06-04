@@ -92,7 +92,7 @@ You can play the game interactively in a web browser.
 
 You'll need to start the lua/torch backend process:o
 
-    ./toy.lua -mode play
+    ./q-learning.lua -mode play
 
 Then, concurrently you'll need to start the node server (this assumes you have run `npm install` in the `client` sub-directory):
 
@@ -115,21 +115,21 @@ The neural net is a simple feed-forward network with one hidden layer and Tanh n
 
 Training with these parameters results in decent play (~95% win rate):
 
-    ./toy.lua -mode train -episodes 4000 > train.out
+    ./q-learning.lua -mode train -episodes 4000 > train.out
 
 Testing can be done as follows:
 
-    ./toy.lua -mode train -episodes 2500 -prefix one-speed -speeds 0.5 > one-speed.out
+    ./q-learning.lua -mode train -episodes 2500 -prefix one-speed -speeds 0.5 > one-speed.out
 
 One of the more challenging aspects of this game is that the speed varies. If a single speed is used, we get a 100% win rate (1000/1000):
 
-    ./toy.lua -mode test -save one-speed.t7 -episodes 1000 -speeds 0.5 -quiet
+    ./q-learning.lua -mode test -save one-speed.t7 -episodes 1000 -speeds 0.5 -quiet
 
 # Watching the AI play
 
 To watch a trained model play, launch the lua backend using the `simulate` mode and specify your saved model:
 
-    ./toy.lua -mode simulate -save model.t7
+    ./q-learning.lua -mode simulate -save model.t7
 
 Then after making sure the node server is running, open the web browser
 to [localhost:2600/ai](http://localhost:2600/ai).
