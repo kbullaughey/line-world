@@ -113,17 +113,46 @@ The neural net is a simple feed-forward network with one hidden layer and Tanh n
 
 # Training a model
 
+## One-step Q-learning
+
 Training with these parameters results in decent play (~95% win rate):
 
-    ./q-learning.lua -mode train -episodes 4000 > train.out
+    ./q-learning.lua -mode train -episodes 6000 > train.out
 
 Testing can be done as follows:
 
-    ./q-learning.lua -mode train -episodes 2500 -prefix one-speed -speeds 0.5 > one-speed.out
+    ./q-learning.lua -mode test -episodes 1000 -save model.t7 -quiet
 
 One of the more challenging aspects of this game is that the speed varies. If a single speed is used, we get a 100% win rate (1000/1000):
 
+    ./q-learning.lua -mode train -episodes 2500 -prefix one-speed -speeds 0.5 > one-speed.out
     ./q-learning.lua -mode test -save one-speed.t7 -episodes 1000 -speeds 0.5 -quiet
+
+One challenge of one-step Q-learning is that until we have a pretty good
+estimate of Q(s,a), we really only learn something from the time steps that
+result in rewards. We can thus speed up training sampling time steps for the
+minibatch in a non-uniform way. Speficially, we can use rejection sampling to
+reject the bulk of the non-reward steps.
+
+    ./q-learning.lua -mode train -episodes 3000 -reject 0.8 > train.out
+
+Rejection sampling works particularly well in this game, because at least in
+the case of getting on the boat, falling in the water, and getting off at the
+far dock, the reward is connected directly to actions taken in that step. 
+
+## n-step Q-learning
+
+I have also implemented n-step q-learning as described in
+[Asynchronous methods for deep reinforcement learning](https://arxiv.org/abs/1602.01783), Algorithm 2, although my method is not asynchronous.
+
+    ./n-step-q-learning.lua -mode train -save n-step -episodes 6000 -n 2 \
+        -rate 0.02 > n-step-train.out
+
+And then testing it as follows:
+
+    ./n-step-q-learning.lua -mode test -save n-step.t7 -episodes 1000 -quiet
+
+I got 947 of 1000 wins. And if we stick to a single speed, we get 100% win rate.
 
 # Watching the AI play
 

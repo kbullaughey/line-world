@@ -50,16 +50,8 @@ cmd:option('-regularization', 1e-05, 'weight-decay regularization')
 cmd:option('-prefix', 'model', 'saved model prefix')
 cmd:option('-speeds', '0.3,0.5,0.7', 'different speeds of the boat')
 cmd:option('-frames', 6, 'number of frames to include')
-cmd:option('-update-every', 1, 'How often to update the parameters (int >= 1)')
-cmd:option('-reject', 0, 'How often we should reject non-terminal samples (0 <= float <= 1)')
+cmd:option('-n', 4, 'number of steps to use in the n-step q-learning')
 params = cmd:parse(arg)
-
--- Training is improved if we preferentially sample tuples for the minibatch to include
--- terminal ones. This is important early on in training when our estimte of Q is poor,
--- at which point it helps to use actual rewards.
-if params['reject'] < 0 or params['reject'] > 1 then
-  print("rejection rate must be in [0,1], got: " .. params['reject'])
-end
 
 startedAt = os.time()
 speeds = tablex.map(function(x) return tonumber(x) end, stringx.split(params.speeds, ","))
@@ -168,10 +160,10 @@ function minibatch(D, batchSize)
     while not accept do
       w = math.floor(torch.uniform() * #D) + 1
       xt, a, r, xtp1 = unpack(D[w])
-      if r > 0 then
+      if r == 10 then
         accept = true
       else
-        if torch.uniform() < 1-params['reject'] then
+        if torch.uniform() < 0.1 then
           accept = true
         end
       end
@@ -274,9 +266,9 @@ function train(par)
   local D = {}
   local M = par['episodes']
   local T = par['max-time']+5
-  local updateFreq = par['update-every']
   local capacity = par['capacity']
   local batchSize = par['batch']
+  local nSteps = par['n']
   -- Current index into D
   local d = 1
   local model = makeNet(par)
@@ -305,7 +297,7 @@ function train(par)
     local xtp1
     local r
     for t=histLen,T do
-      xt = phi(s)
+      s[t].phi = phi(s)
       local u = torch.uniform()
       local action
       local wasRandom = ''
@@ -315,26 +307,33 @@ function train(par)
         action = math.floor(torch.uniform(1,4))
         wasRandom = 'R'
       else
-        q = Q(xt, model.net)
+        q = Q(s[t].phi, model.net)
         local _, bestQ = q:max(2)
         action = bestQ[1][1]
       end
-      s[t+1], r = emulator.evolve(s[t], action)
+      s[t].action = action
+      s[t+1], s[t].r = emulator.evolve(s[t], action)
+      s[t+1].phi = phi(s)
       print("> " .. s[t].picture .. " took " .. action .. wasRandom .. " to " ..
-        s[t+1].picture .. ', reward: ' .. r .. " episode " .. i .. " timestep " .. t)
-      xtp1 = phi(s)
-      D[d] = {xt, action, r, xtp1}
-      d = (d % capacity) + 1
-      if (d-1) % updateFreq == 0 then
+        s[t+1].picture .. ', reward: ' .. s[t].r .. " episode " .. i .. " timestep " .. t)
+
+      if (t % nSteps == 0 or s[t+1].gameOver) and t-nSteps+1 > histLen then
+        -- Compute the discounted rewards for each tuple and put them in the data memory.
+        local R
+        if s[t+1].gameOver then
+          R = 0
+        else
+          R = Q(s[t+1].phi, model.net):max()
+        end
+        for k=t,t-nSteps+1,-1 do
+          R = s[k].r + gamma * R
+          D[d] = {s[k].phi, s[k].action, R, s[k+1].phi}
+          d = (d % capacity) + 1
+        end
+
+        -- Perform a gradient update sampling from replay memory.
         local example = minibatch(D, batchSize)
-        -- Since the targets are a function of the parameters, we compute those first
-        -- before the predictions so we don't mess up our nerual net state during
-        -- the forward and backward passes.
-        local targets = Q(example[2], model.net):max(2)
-        local nonTerminal =
-          torch.gt(torch.eq(example[4],0):double() + torch.eq(example[4],1):double(),0):double()
-        local discountedFuture = nonTerminal:cmul(targets):mul(gamma)
-        local y = example[4] + discountedFuture
+        local y = example[4]
         gradTheta:zero()
         -- Forward pass
         local predictions = model.net:forward(example[1])
@@ -365,7 +364,7 @@ function train(par)
 
       -- If the game is over, start the next episode
       if s[t+1].gameOver then
-        print("final reward: " .. r)
+        print("final reward: " .. s[t].r)
         break
       end
     end
