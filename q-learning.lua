@@ -65,13 +65,12 @@ startedAt = os.time()
 speeds = tablex.map(function(x) return tonumber(x) end, stringx.split(params.speeds, ","))
 speeds = torch.Tensor(speeds)
 histLen = params['frames']
-stay = 2
 initialEpsilon = params['initial-epsilon']
 finalEpsilon = params['final-epsilon']
 decayOver = params['decay-epsilon-over']
 numActions = 3
 gameSize = params['size']
-emulator.parameterize(gameSize, speeds, params['max-time'])
+emulator.parameterize(gameSize, speeds, params['max-time'], histLen)
 
 -- Interactive episode
 function play(simulator)
@@ -101,7 +100,7 @@ function play(simulator)
             if #history < histLen then
               command = 2
             else
-              local x = phi(history)
+              local x = emulator.phi(history)
               local q = Q(x, simulator.net)
               local _, bestQ = q:max(2)
               command = bestQ[1][1]
@@ -133,23 +132,6 @@ function play(simulator)
   }
   local server = ws.server.copas.listen(config)
   copas.loop()
-end
-
--- Return a tensor with the first row corresponding to the current
--- scene, and the subsequent rows corresponding to x(t+1) - x(t) difference
--- frames.
-function phi(history)
-  local x = torch.Tensor(histLen, history[1].size)
-  if #history < histLen then
-    error("Insufficient history")
-  end
-  -- Copy the last `histLen` scenes into x
-  x[1]:copy(history[#history].scene)
-  for i=2,histLen do
-    local prev = #history - (i - 1)
-    x[i]:copy(history[prev].scene - history[prev+1].scene)
-  end
-  return x
 end
 
 -- Sample minibatch with replacement
@@ -240,10 +222,10 @@ function test(model, par)
   for i=1,M do
     local s = {emulator.firstEnvironment()}
     for t=2,histLen do
-      s[t] = emulator.evolve(s[t-1], stay)
+      s[t] = emulator.evolve(s[t-1], emulator.stay)
     end
     for t=histLen,T do
-      local xt = phi(s)
+      local xt = emulator.phi(s)
       local q = Q(xt, model.net)
       local _, bestQ = q:max(2)
       local action = bestQ[1][1]
@@ -299,13 +281,13 @@ function train(par)
     -- Run the game forward enough to get histLen images
     local s = {emulator.firstEnvironment()}
     for t=2,histLen do
-      s[t] = emulator.evolve(s[t-1], stay)
+      s[t] = emulator.evolve(s[t-1], emulator.stay)
     end
     local xt
     local xtp1
     local r
     for t=histLen,T do
-      xt = phi(s)
+      xt = emulator.phi(s)
       local u = torch.uniform()
       local action
       local wasRandom = ''
@@ -322,7 +304,7 @@ function train(par)
       s[t+1], r = emulator.evolve(s[t], action)
       print("> " .. s[t].picture .. " took " .. action .. wasRandom .. " to " ..
         s[t+1].picture .. ', reward: ' .. r .. " episode " .. i .. " timestep " .. t)
-      xtp1 = phi(s)
+      xtp1 = emulator.phi(s)
       D[d] = {xt, action, r, xtp1}
       d = (d % capacity) + 1
       if (d-1) % updateFreq == 0 then

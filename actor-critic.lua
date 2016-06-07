@@ -33,10 +33,12 @@ cmd:text()
 cmd:text('Options')
 cmd:option('-mode', '', 'one of train|test')
 cmd:option('-size', 10, 'length of world')
+cmd:option('-agents', 50, 'number of concurrent agents')
 cmd:option('-hidden', 200, 'hidden size')
 cmd:option('-episodes', 10, 'number of episodes to simulate')
 cmd:option('-quiet', false, 'produce less output')
 cmd:option('-momentum', 0.5, 'momentum')
+cmd:option('-norm', 1, 'maximum update norm')
 cmd:option('-max-time', 75, 'maximum length of games in clock ticks.')
 cmd:option('-rate', 0.01, 'learning rate')
 cmd:option('-save', '', 'Filename to save model to (or read from when -mode test).')
@@ -53,27 +55,9 @@ startedAt = os.time()
 speeds = tablex.map(function(x) return tonumber(x) end, stringx.split(params.speeds, ","))
 speeds = torch.Tensor(speeds)
 histLen = params['frames']
-stay = 2
 numActions = 3
 gameSize = params['size']
-emulator.parameterize(gameSize, speeds, params['max-time'])
-
--- Return a tensor with the first row corresponding to the current
--- scene, and the subsequent rows corresponding to x(t+1) - x(t) difference
--- frames.
-function phi(history)
-  local x = torch.Tensor(histLen, history[1].size)
-  -- Copy the last `histLen` scenes into x
-  x[1]:copy(history[#history].scene)
-  for i=2,histLen do
-    local prev = #history - (i - 1)
-    if prev < 1 then
-      prev = 1
-    end
-    x[i]:copy(history[prev].scene - history[prev+1].scene)
-  end
-  return x
-end
+emulator.parameterize(gameSize, speeds, params['max-time'], histLen)
 
 -- Only regularize linear transform weight parameters, not bias parameters. I make
 -- this judgement based on whether the parameter tensor is 1D or 2D.
@@ -114,13 +98,53 @@ end
 
 -- Sample from the policy using the cumulative distribution.
 function samplePolicy(policy)
+  local epsilon = 0.04
   local action = 1
-  local cdf = policy:cumsum()
+  local cdf = torch.add(policy, epsilon):cumsum()
   local u = torch.uniform()
   while cdf[action] < u do
     action = action + 1
   end
   return action
+end
+
+-- Create game images enumerating all possible positions of the boat and player.
+-- For each of these, create a game image and feed it through the neural net.
+function examinePolicyByEnumeratingStates(model, size, speed, goal, direction)
+  -- Tile centers on uniform (0,1) interval
+  local waterTiles = emulator.waterTiles({size=size})
+  local waterTileCenters = torch.range(0.5, waterTiles-0.5, 1.0):div(waterTiles)
+  local softmax = nn.SoftMax()
+  local playerPositions = {1, "boat", size}
+  for b=1,waterTiles do
+    local boatRel = waterTileCenters[b]
+    for p=1,#playerPositions do
+      local player
+      if playerPositions[p] == "boat" then
+        player = emulator.boatTile({size=size, boat=boatRel})
+      else
+        player = playerPositions[p]
+      end
+      local env = emulator.customEnvironment(player, goal, speed, direction, boatRel)
+      local xt = emulator.phiBackward(env, histLen)
+      print("> " .. env.picture)
+      print(xt)
+      local policy, V = unpack(model.net:forward(xt))
+      print(softmax:forward(policy):view(1,-1))
+      print("V: " .. V[1])
+    end
+  end
+end
+
+function weightDecayNormedUpdate(par, grad, wd, rate)
+  -- Apply weight decay
+  grad:add(torch.cmul(wd, par))
+  local norm = grad:norm()
+  if norm > params['norm'] then
+    grad:mul(params['norm']/norm)
+  end
+  print("grad:norm(): " .. grad:norm())
+  par:add(rate, grad)
 end
 
 function train(par)
@@ -132,125 +156,158 @@ function train(par)
   local weightDecay = par['L2-regularization']
   local beta = par['entropy-regularization']
   local updateEvery = par['update-every']
+  local numAgents = par['agents']
+
+  -- All agents will share this model. Because lua isn't truely parallelized.
+  -- All concurrent coroutines run in one thread.
   local model = makeNet(par)
+  local theta = model.net.par
+  local numPar = theta:size(1)
+  local sharedTheta = torch.Tensor(numPar):copy(theta)
+  local gradTheta = model.net.gradPar
+  local valueGradTheta = torch.zeros(numPar)
+  local policyGradTheta = torch.zeros(numPar)
+  local gradCount = 0
+  local completed = 0
+
+  -- Create a number of agents, each which will maintain an environment and
+  -- a set of parameters, and pass back a gradient to be averaged.
+  local agents = {}
+  for g=1,numAgents do
+    agents[g] = coroutine.create(function(identity)
+      -- get set up and then yield.
+      local r
+      local policyGrad = torch.Tensor(numActions)
+      local valueGrad = torch.Tensor(1)
+      local entropyGrad = torch.Tensor(3)
+      print("agent " .. identity .. " started")
+      coroutine.yield()
+      print("agent " .. identity .. " resumed (1)")
+      while true do
+        -- Run the game forward enough to get histLen images
+        print("agent " .. identity .. " starting episode")
+        local s = {emulator.firstEnvironment()}
+        for t=2,histLen do
+          s[t], r = emulator.evolve(s[t-1], emulator.stay)
+          s[t-1].r = r
+          s[t].xt = emulator.phi(s)
+          s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
+        end
+        local t=histLen
+        while true do
+          if s[t].gameOver then
+            print("final reward: " .. s[t-1].r)
+            completed = completed + 1
+            break
+          end
+          local tStart = t
+          while true do
+            if s[t].xt == nil then
+              s[t].xt = emulator.phi(s)
+            end
+            s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
+            -- Sample from the policy using the cumulative distribution.
+            local policy = s[t].policy:exp()
+            s[t].action = samplePolicy(policy)
+      
+            -- Perform the action.
+            s[t+1], r = emulator.evolve(s[t], s[t].action)
+            s[t].r = r
+      
+            print("> " .. s[t].picture .. " took " .. s[t].action .. " to " .. s[t+1].picture ..
+              ', reward: ' .. s[t].r .. " timestep " .. t)
+            print(policy:view(1,-1))
+      
+            t = t + 1
+            if (s[t].gameOver or t-tStart == updateEvery) then
+              -- Compute discounted rewards and accuulate gradients.
+              local R = 0
+--              if s[t].gameOver then
+--                print("agent " .. identity .. " game over at " .. t)
+--                R = 0
+--              else
+--                s[t].xt = emulator.phi(s)
+--                s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
+--                R = s[t].V[1]
+--              end
+              local advantage
+              for k=t-1,tStart,-1 do
+                R = s[k].r + gamma * R
+                local logPolicy, V = unpack(model.net:forward(s[k].xt))
+                advantage = R
+                --advantage = R - s[k].V[1]
+                print("R: " .. R .. ", V: " .. s[k].V[1], " advantage: " .. advantage)
+                -- Do one packward pass for the policy with the valueGrad zeroed out.
+                -- Accumulate the gradient in policyGradTheta
+                gradTheta:zero()
+                policyGrad:zero()
+                policyGrad[s[k].action] = advantage
+                valueGrad[1] = 0
+                entropyGrad:exp(logPolicy)
+                entropyGrad:cmul(torch.add(logPolicy, 1))
+                policyGrad:add(-beta, entropyGrad)
+                model.net:backward(s[k].xt, {policyGrad, valueGrad})
+                policyGradTheta:add(gradTheta)
+                -- And one backward pass for the value with the policyGrad zeroed out.
+                -- Accumulate the gradient in valueGradTheta
+--                gradTheta:zero()
+--                valueGrad[1] = -2 * advantage
+--                valueGrad[1] = -2 * advantage
+--                policyGrad:zero()
+--                model.net:backward(s[k].xt, {policyGrad,valueGrad})
+--                valueGradTheta:add(gradTheta)
+              end
+              gradCount = gradCount + 1
+              break
+            end
+          end
+          coroutine.yield()
+          print("agent " .. identity .. " resumed (2)")
+          print(s[t-1])
+          if s[t-1].policy then
+            print("% " .. s[t-1].action .. " " ..
+              stringx.join(" ", torch.exp(s[t-1].policy):totable()))
+            print(torch.exp(model.net:forward(s[t-1].xt)[1]):view(1,-1))
+            print(torch.exp(model.net:forward(emulator.phi(s))[1]):view(1,-1))
+          end
+        end
+      end
+    end)
+    -- Call the agent once to get set up and get to the first yield.
+    coroutine.resume(agents[g], g)
+  end
+
   -- Only regularize non-bias parameters
   local wdMask = regularizationMask(model.net)
   local wd = wdMask:mul(weightDecay)
-  local theta = model.net.par
-  local gradTheta = model.net.gradPar
-  local runningAdvantage = 0
+
+  -- Look until we've done at least M episodes. Actual number will be slightly
+  -- higher so that it is a multiple of numAgents.
+  print("All agents tarted")
   local upCount = 0
-  local gradCount = 0
-  local policyGrad = torch.Tensor(numActions)
-  local valueGrad = torch.Tensor(1)
-  local averagePolicy = torch.zeros(3)
-  local entropyGrad = torch.Tensor(3)
-  local r
-  gradTheta:zero()
-  for i=1,M do
-    -- Run the game forward enough to get histLen images
-    local s = {emulator.firstEnvironment()}
-    for t=2,histLen do
-      s[t], r = emulator.evolve(s[t-1], stay)
-      s[t-1].r = r
-      s[t].xt = phi(s)
-      s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
+  local picks = 0
+  while completed < M do
+    local whichAgent = picks % numAgents + 1
+    local ok, err = coroutine.resume(agents[whichAgent], whichAgent)
+    if not ok then
+      print(err)
+      error("agent " .. whichAgent .. " failed to resume")
     end
-    local t=histLen
-    while true do
-      if t > T or s[t].gameOver then
-        print("final reward: " .. s[t-1].r)
-        break
-      end
-      local tStart = t
-      while true do
-        if s[t].xt == nil then
-          s[t].xt = phi(s)
-        end
-        s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
-        -- Sample from the policy using the cumulative distribution.
-        local policy = s[t].policy:exp()
-        averagePolicy:mul(0.99):add(policy)
-        print("policy")
-        print(policy:view(1,-1))
-        print(averagePolicy:view(1,-1))
-        s[t].action = samplePolicy(policy)
-  
-        -- Perform the action.
-        s[t+1], r = emulator.evolve(s[t], s[t].action)
-        s[t].r = r
-  
-        print("> " .. s[t].picture .. " took " .. s[t].action .. " to " .. s[t+1].picture ..
-          ', reward: ' .. s[t].r .. " episode " .. i .. " timestep " .. t)
-  
-        if (s[t+1].gameOver or t+1-tStart == updateEvery) then
-          -- Compute discounted rewards and accuulate gradients.
-          local R
-          if s[t+1].gameOver then
-            R = 0
-          else
-            s[t+1].xt = phi(s)
-            s[t+1].policy, s[t+1].V = unpack(model.net:forward(s[t+1].xt))
-            R = s[t+1].V[1]
-          end
-          local advantage
-          for k=t,tStart,-1 do
-            R = s[k].r + gamma * R
-            local logPolicy, V = unpack(model.net:forward(s[k].xt))
-            print("policy:")
-            local policy = torch.exp(logPolicy)
-            print(policy:view(1,-1))
-            print("entropy: " .. -policy:cmul(logPolicy):sum())
-            policyGrad:zero()
-            advantage = R - s[k].V[1]
-            policyGrad[s[k].action] = advantage
-            print("policyGrad only:")
-            print(policyGrad:view(1,-1))
-            valueGrad[1] = advantage
-            print("value error: " .. advantage^2)
-            entropyGrad:exp(logPolicy)
-            entropyGrad:cmul(torch.add(logPolicy, 1))
-            print("entropyGrad:")
-            print(entropyGrad:view(1,-1))
-            policyGrad:add(-beta, entropyGrad)
-            model.net:backward(s[k].xt, {policyGrad,valueGrad})
-          end
-          gradCount = gradCount + 1
+    if whichAgent == numAgents then
+      -- After a full pass through the agents we update our gradient
+      policyGradTheta:div(numAgents)
+      --valueGradTheta:div(numAgents)
 
-          if gradCount % 100 == 0 then
-            gradTheta:div(100)
-            -- Update the parameters
-            -- Apply weight decay
-            gradTheta:add(torch.cmul(wd, theta))
-            local update = torch.zeros(theta:size(1))
-            -- Use momentum, but scaling down the update vector if it's to big, this
-            -- helps with exploding gradients.
-            -- We're doing a maximization problem, so we add a positive gradient.
-            update:mul(momentum):add(learningRate, gradTheta)
-            local norm = update:norm()
-            if norm > 1 then
-              update:mul(1/norm)
-            end
-            theta:add(update)
-            runningAdvantage = 0.99 * runningAdvantage + 0.01 * advantage
-            upCount = upCount + 1
-            print("[" .. i .. "," .. upCount .. "] runningAdvantage: " .. runningAdvantage ..
-              ", advantage: " .. advantage ..  ", update: " .. update:norm() ..
-              ", R: " .. R .. ", |theta|: " .. theta:norm())
-            gradTheta:zero()
-          end
-
-          t = t + 1
-          tStart = t
-          break
-        end
-        t = t + 1
-      end
+      -- Update the parameters
+      weightDecayNormedUpdate(theta, policyGradTheta, wd, learningRate)
+      --weightDecayNormedUpdate(theta, valueGradTheta, wd, -learningRate)
+      upCount = upCount + 1
+      print("[" .. completed .. "," .. upCount .. "] |theta|: " .. theta:norm())
+      gradTheta:zero()
+      policyGradTheta:zero()
+      valueGradTheta:zero()
     end
---    if i % 500 == 1 then
---      local fn = params.prefix .. "-" .. i .. ".t7"
---      torch.save(fn, model)
---    end
+    picks = picks + 1
   end
   return model
 end
@@ -262,10 +319,10 @@ function test(model, par)
   for i=1,M do
     local s = {emulator.firstEnvironment()}
     for t=2,histLen do
-      s[t] = emulator.evolve(s[t-1], stay)
+      s[t] = emulator.evolve(s[t-1], emulator.stay)
     end
     for t=histLen,T do
-      s[t].xt = phi(s)
+      s[t].xt = emulator.phi(s)
       s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
       local policy = s[t].policy:exp()
       s[t].action = samplePolicy(policy)

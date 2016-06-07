@@ -2,6 +2,7 @@ local emu = {}
 
 emu.sceneLetters = {[-3]="w", [-2]="b", [-1]="d", "D", "B", "W"}
 emu.winReward = 10
+emu.stay = 2
 
 -- Pretty print a scene using letters
 function emu.sceneString(scene)
@@ -35,10 +36,11 @@ function emu.renderScene(env)
 end
 
 -- Set some invariant emulator properties
-function emu.parameterize(gameSize, speeds, maxTime)
+function emu.parameterize(gameSize, speeds, maxTime, histLen)
   emu.gameSize = gameSize
   emu.speeds = speeds
   emu.maxTime = maxTime
+  emu.histLen = histLen
 end
 
 -- Initial state of the game
@@ -46,32 +48,31 @@ function emu.firstEnvironment()
   -- Randomly select whether we start on 1 and end on 10 or the opposite
   local start, finish =
     unpack(torch.Tensor{1,emu.gameSize}:index(1,torch.randperm(2):long()):totable())
+  -- Pick the boats position.
+  local boat = torch.uniform()
+  local speed = emu.speeds[torch.randperm(emu.speeds:size(1))[1]]
+  local direction = 1
+  -- Switch direction with prob 0.5
+  if torch.uniform() < 0.5 then
+    direction = -1
+  end
+  return emu.customEnvironment(start, finish, speed, direction, boat)
+end
+
+-- Create an environment based on provided parameters
+function emu.customEnvironment(player, goal, speed, direction, boat)
   local env = {
-    -- Width of the scene in tiles
     size = emu.gameSize,
-    -- The player's position in [1,size]
-    player = start,
-    goal = finish,
+    player = player,
+    goal = goal,
     -- Don't draw the boat or player yet
     scene = torch.Tensor{1,-3,-3,-3,-3,-3,-3,-3,-3,-1},
-    -- speed is how fast the boat moves in tiles/tick.
-    speed = 0,
-    -- Boat direction can be either 1 (right) or -1 (left)
-    direction = 1,
-    -- Actual boat position in the interval (0,1). This excludes the docks.
-    boat = 0,
+    speed = speed,
+    direction = direction,
+    boat = boat,
     gameOver = false,
+    ticks = 0,
   }
-  -- Pick the boats position.
-  env.boat = torch.uniform()
-  -- Pick a speed
-  env.speed = emu.speeds[torch.randperm(emu.speeds:size(1))[1]]
-  -- Switch direction if prob 0.5
-  if torch.uniform() < 0.5 then
-    env.direction = -1
-  end
-  -- Clock ticks
-  env.ticks = 0
   -- Render the scene
   env.scene = emu.renderScene(env)
   -- Also privide the string representation
@@ -84,7 +85,7 @@ function emu.reward(env, oldEnv)
   local p = emu.sceneLetters[env.scene[env.player]]
   local oldP = emu.sceneLetters[oldEnv.scene[oldEnv.player]]
 
-  local r = 0
+  local r = -0.03
   if env.player == env.goal then
     r = emu.winReward
   elseif p == "W" then
@@ -136,10 +137,51 @@ function emu.evolve(env, action)
   -- Update the clock
   z.ticks = env.ticks + 1
   local r = emu.reward(z, env)
-  if r < 0 or r == emu.winReward then
+  if r < -0.5 or r == emu.winReward then
     z.gameOver = true
   end
   return z, r
+end
+
+-- Return a tensor with the first row corresponding to the current
+-- scene, and the subsequent rows corresponding to x(t+1) - x(t) difference
+-- frames.
+function emu.phi(history)
+  local x = torch.Tensor(emu.histLen, history[1].size)
+  -- Copy the last `histLen` scenes into x
+  x[1]:copy(history[#history].scene)
+  for i=2,emu.histLen do
+    local prev = #history - (i - 1)
+    if prev < 1 then
+      prev = 1
+    end
+    x[i]:copy(history[prev].scene - history[prev+1].scene)
+  end
+  return x
+end
+
+-- Create a game image like phi but based on the current environment, running
+-- the emulator backwards and assuming that the stay action was taken at each
+-- timestep. This allows one to start from a single point in time and assess a
+-- policy or value function. The original motivation for this method was to
+-- enumerate all game states and examine how the trained policy network
+-- evaluates the game state, but since a policy network requires multiple
+-- frames, we can use this method to generate an artificial image going back in
+-- time from the current position.
+function emu.phiBackward(env)
+  -- Switch the direction of the boat so we can run the emulator backwards.
+  env.direction = (-1) * env.direction
+  local s = {}
+  -- Build the history in reverse order, but putting them into the table in the
+  -- forward-facing order.
+  s[emu.histLen] = env
+  for t=emu.histLen-1,1,-1 do
+    s[t] = emu.evolve(s[t+1], emu.stay)
+  end
+  -- Restore the direction of the boat in the original environment.
+  env.direction = (-1) * env.direction
+  -- Return the game image for this history.
+  return emu.phi(s)
 end
 
 return emu
