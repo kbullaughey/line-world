@@ -85,7 +85,7 @@ function emu.reward(env, oldEnv)
   local p = emu.sceneLetters[env.scene[env.player]]
   local oldP = emu.sceneLetters[oldEnv.scene[oldEnv.player]]
 
-  local r = -0.03
+  local r = 0
   if env.player == env.goal then
     r = emu.winReward
   elseif p == "W" then
@@ -93,7 +93,7 @@ function emu.reward(env, oldEnv)
   elseif env.ticks > emu.maxTime then
     r = -1
   elseif p == "B" and oldP ~= "B" then
-    r = 1
+    r = 3
   end
   return r
 end

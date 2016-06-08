@@ -98,9 +98,8 @@ end
 
 -- Sample from the policy using the cumulative distribution.
 function samplePolicy(policy)
-  local epsilon = 0.04
   local action = 1
-  local cdf = torch.add(policy, epsilon):cumsum()
+  local cdf = policy:cumsum()
   local u = torch.uniform()
   while cdf[action] < u do
     action = action + 1
@@ -191,7 +190,7 @@ function train(par)
           s[t], r = emulator.evolve(s[t-1], emulator.stay)
           s[t-1].r = r
           s[t].xt = emulator.phi(s)
-          s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
+          s[t].logPolicy, s[t].V = unpack(model.net:forward(s[t].xt))
         end
         local t=histLen
         while true do
@@ -200,14 +199,14 @@ function train(par)
             completed = completed + 1
             break
           end
-          local tStart = t
+--          local tStart = t
           while true do
             if s[t].xt == nil then
               s[t].xt = emulator.phi(s)
             end
-            s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
+            s[t].logPolicy, s[t].V = unpack(model.net:forward(s[t].xt))
             -- Sample from the policy using the cumulative distribution.
-            local policy = s[t].policy:exp()
+            local policy = torch.exp(s[t].logPolicy)
             s[t].action = samplePolicy(policy)
       
             -- Perform the action.
@@ -219,7 +218,8 @@ function train(par)
             print(policy:view(1,-1))
       
             t = t + 1
-            if (s[t].gameOver or t-tStart == updateEvery) then
+--            if (s[t].gameOver or t-tStart == updateEvery) then
+            if (s[t].gameOver) then
               -- Compute discounted rewards and accuulate gradients.
               local R = 0
 --              if s[t].gameOver then
@@ -231,15 +231,15 @@ function train(par)
 --                R = s[t].V[1]
 --              end
               local advantage
-              for k=t-1,tStart,-1 do
+              for k=t-1,histLen,-1 do
                 R = s[k].r + gamma * R
-                local logPolicy, V = unpack(model.net:forward(s[k].xt))
                 advantage = R
+                gradTheta:zero()
+                local logPolicy, V = unpack(model.net:forward(s[k].xt))
                 --advantage = R - s[k].V[1]
                 print("R: " .. R .. ", V: " .. s[k].V[1], " advantage: " .. advantage)
                 -- Do one packward pass for the policy with the valueGrad zeroed out.
                 -- Accumulate the gradient in policyGradTheta
-                gradTheta:zero()
                 policyGrad:zero()
                 policyGrad[s[k].action] = advantage
                 valueGrad[1] = 0
@@ -264,9 +264,9 @@ function train(par)
           coroutine.yield()
           print("agent " .. identity .. " resumed (2)")
           print(s[t-1])
-          if s[t-1].policy then
+          if s[t-1].logPolicy then
             print("% " .. s[t-1].action .. " " ..
-              stringx.join(" ", torch.exp(s[t-1].policy):totable()))
+              stringx.join(" ", torch.exp(s[t-1].logPolicy):totable()))
             print(torch.exp(model.net:forward(s[t-1].xt)[1]):view(1,-1))
             print(torch.exp(model.net:forward(emulator.phi(s))[1]):view(1,-1))
           end
@@ -283,7 +283,7 @@ function train(par)
 
   -- Look until we've done at least M episodes. Actual number will be slightly
   -- higher so that it is a multiple of numAgents.
-  print("All agents tarted")
+  print("All agents started")
   local upCount = 0
   local picks = 0
   while completed < M do
@@ -323,9 +323,9 @@ function test(model, par)
     end
     for t=histLen,T do
       s[t].xt = emulator.phi(s)
-      s[t].policy, s[t].V = unpack(model.net:forward(s[t].xt))
-      local policy = s[t].policy:exp()
-      s[t].action = samplePolicy(policy)
+      s[t].logPolicy, s[t].V = unpack(model.net:forward(s[t].xt))
+      local _, best = s[t].logPolicy:max(1)
+      s[t].action = best[1]
 
       -- Perform the action.
       s[t+1], s[t].r = emulator.evolve(s[t], s[t].action)
