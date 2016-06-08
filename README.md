@@ -126,13 +126,13 @@ Testing can be done as follows:
 
 One of the more challenging aspects of this game is that the speed varies. If a single speed is used, we get a 100% win rate (1000/1000):
 
-    ./q-learning.lua -mode train -episodes 2500 -save one-speed -speeds 0.5 > one-speed.out
+    ./q-learning.lua -mode train -episodes 2500 -save one-speed.t7 -speeds 0.5 > one-speed.out
     ./q-learning.lua -mode test -save one-speed.t7 -episodes 1000 -speeds 0.5 -quiet
 
 One challenge of one-step Q-learning is that until we have a pretty good
 estimate of Q(s,a), we really only learn something from the time steps that
 result in rewards. We can thus speed up training sampling time steps for the
-minibatch in a non-uniform way. Speficially, we can use rejection sampling to
+minibatch in a non-uniform way. Specifically, we can use rejection sampling to
 reject the bulk of the non-reward steps.
 
     ./q-learning.lua -mode train -episodes 3000 -reject 0.8 > train.out
@@ -157,11 +157,11 @@ I got 947 of 1000 wins. And if we stick to a single speed, we get 100% win rate.
 
 ## Vanilla policy rollouts
 
-On-policy methods, such as policy gradiet methods, offer an alternative to the off-policy methods of Q-learning. The policy-network variety work by parameterizing the policy with a neural network such that the output of the nerual network is a probability distribution over actions and then sampling from this discrete distribution to play the game. After the game terminates, discounted rewards are computed for each step, and using backpropagation one can compute paramter updates, thereby allowing one to train the policy network.
+On-policy methods, such as policy gradient methods, offer an alternative to the off-policy methods of Q-learning. The policy-network variety work by parameterizing the policy with a neural network such that the output of the neural network is a probability distribution over actions and then sampling from this discrete distribution to play the game. After the game terminates, discounted rewards are computed for each step, and using backpropagation one can compute parameter updates, thereby allowing one to train the policy network.
 
 Unlike the temporal different algorithms, we cannot use a replay memory because older rollouts were played using a different policy, and thus are not samples from the policy under consideration and using them would mess up our estimate of the gradient.
 
-So instead we can roll out several policies and average the gradients. This can be parallelized and thus I use the term agent, but in this implementation the concurrent agetns are not truely parallel (as lua is generally limited to one thread).
+So instead we can roll out several policies and average the gradients. This can be parallelized and thus I use the term agent, but in this implementation the concurrent agents are not truly parallel (as lua is generally limited to one thread).
 
 Without the replay memory, and using full trajectories, we need a larger number of episodes to get this to train:
 
