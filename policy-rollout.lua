@@ -95,8 +95,7 @@ function makeNet(par)
   ns.rawPolicy = nn.Linear(par.hidden, numActions)(ns.h)
   ns.validOnly = nn.MaskedSelect()({ns.rawPolicy, ns.validActions})
   ns.policy = nn.LogSoftMax()(ns.validOnly)
-  ns.value = nn.Linear(par.hidden, 1)(ns.h)
-  ns.net = nn.gModule({ns.xAndValidActions}, {ns.policy, ns.value})
+  ns.net = nn.gModule({ns.xAndValidActions}, {ns.policy})
   ns.net.par, ns.net.gradPar = ns.net:getParameters()
   ns.net.par:uniform(-0.05, 0.05)
   ns.net.gradPar:zero()
@@ -136,9 +135,8 @@ function examinePolicyByEnumeratingStates(model, size, speed, goal, direction)
       local valid = emulator.validActions(env)
       print("> " .. env.picture)
       print(xt)
-      local policy, V = model.net:forward({xt, valid})
+      local policy = model.net:forward({xt, valid})
       print(softmax:forward(policy):view(1,-1))
-      print("V: " .. V[1])
     end
   end
 end
@@ -150,7 +148,6 @@ function weightDecayNormedUpdate(par, grad, wd, rate)
   if norm > params['norm'] then
     grad:mul(params['norm']/norm)
   end
-  print("grad:norm(): " .. grad:norm())
   par:add(rate, grad)
 end
 
@@ -195,18 +192,16 @@ function train(par)
       -- get set up and then yield.
       local r
       local policyGrad = torch.Tensor(numActions)
-      local valueGrad = torch.Tensor(1)
       coroutine.yield()
       while true do
         -- Run the game forward enough to get histLen images
-        print("agent " .. identity .. " starting episode")
         local s = {emulator.firstEnvironment()}
         for t=2,histLen do
           s[t], r = emulator.evolve(s[t-1], emulator.stay)
           s[t-1].r = r
           s[t].xt = emulator.phi(s)
           s[t].validActions = emulator.validActions(s[t])
-          s[t].logPolicy, s[t].V = unpack(model.net:forward({s[t].xt, s[t].validActions}))
+          s[t].logPolicy = model.net:forward({s[t].xt, s[t].validActions})
         end
         local t=histLen
         while true do
@@ -215,13 +210,12 @@ function train(par)
             completed = completed + 1
             break
           end
---          local tStart = t
           while true do
             if s[t].xt == nil then
               s[t].xt = emulator.phi(s)
             end
             s[t].validActions = emulator.validActions(s[t])
-            s[t].logPolicy, s[t].V = unpack(model.net:forward({s[t].xt, s[t].validActions}))
+            s[t].logPolicy = model.net:forward({s[t].xt, s[t].validActions})
             -- Sample from the policy using the cumulative distribution.
             local policy = policyDistr(s[t])
             s[t].action = samplePolicy(policy)
@@ -235,45 +229,22 @@ function train(par)
             print(policy:view(1,-1))
       
             t = t + 1
---            if (s[t].gameOver or t-tStart == updateEvery) then
             if (s[t].gameOver) then
               -- Compute discounted rewards and accuulate gradients.
               local R = 0
---              if s[t].gameOver then
---                print("agent " .. identity .. " game over at " .. t)
---                R = 0
---              else
---                s[t].xt = emulator.phi(s)
---                s[t].policy, s[t].V = unpack(model.net:forward({s[t].xt, s[t].validActions))
---                R = s[t].V[1]
---              end
-              local advantage
               for k=t-1,histLen,-1 do
                 R = s[k].r + gamma * R
-                advantage = R
                 gradTheta:zero()
-                local logPolicy, V = unpack(model.net:forward({s[k].xt, s[k].validActions}))
-                --advantage = R - s[k].V[1]
-                print("R: " .. R .. ", V: " .. s[k].V[1], " advantage: " .. advantage)
-                -- Do one packward pass for the policy with the valueGrad zeroed out.
+                local logPolicy = model.net:forward({s[k].xt, s[k].validActions})
                 -- Accumulate the gradient in policyGradTheta
                 policyGrad:zero()
-                policyGrad[s[k].action] = advantage
-                valueGrad[1] = 0
+                policyGrad[s[k].action] = R
                 local validPolicyGrad = policyGrad:maskedSelect(s[k].validActions)
                 local entropyGrad = torch.exp(logPolicy)
                 entropyGrad:cmul(torch.add(logPolicy, 1))
                 validPolicyGrad:add(-beta, entropyGrad)
-                model.net:backward({s[k].xt, s[k].validActions}, {validPolicyGrad, valueGrad})
+                model.net:backward({s[k].xt, s[k].validActions}, validPolicyGrad)
                 policyGradTheta:add(gradTheta)
-                -- And one backward pass for the value with the policyGrad zeroed out.
-                -- Accumulate the gradient in valueGradTheta
---                gradTheta:zero()
---                valueGrad[1] = -2 * advantage
---                valueGrad[1] = -2 * advantage
---                policyGrad:zero()
---                model.net:backward(s[k].xt, {policyGrad,valueGrad})
---                valueGradTheta:add(gradTheta)
               end
               gradCount = gradCount + 1
               break
@@ -293,7 +264,6 @@ function train(par)
 
   -- Look until we've done at least M episodes. Actual number will be slightly
   -- higher so that it is a multiple of numAgents.
-  print("All agents started")
   local upCount = 0
   local picks = 0
   while completed < M do
@@ -334,7 +304,8 @@ function test(model, par)
     for t=histLen,T do
       s[t].xt = emulator.phi(s)
       s[t].validActions = emulator.validActions(s[t])
-      s[t].logPolicy, s[t].V = unpack(model.net:forward({s[t].xt, s[t].validActions}))
+      s[t].logPolicy = model.net:forward({s[t].xt, s[t].validActions})
+      -- Select the best valid action
       local _, best = s[t].logPolicy:max(1)
       s[t].action = torch.range(1,3):maskedSelect(s[t].validActions)[best[1]]
 

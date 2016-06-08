@@ -17,6 +17,18 @@ function emu.waterTiles(env)
   return env.size - 2
 end
 
+-- Return a ByteTensor mask indicating the valid actions.
+function emu.validActions(env)
+  local mask = torch.ByteTensor({1,1,1})
+  if env.player == 1 then
+    mask[1] = 0
+  end
+  if env.player == env.size then
+    mask[3] = 0
+  end
+  return mask
+end
+
 -- Discrete position of the boat.
 function emu.boatTile(env)
   return 2+math.floor(env.boat*emu.waterTiles(env))
@@ -93,7 +105,7 @@ function emu.reward(env, oldEnv)
   elseif env.ticks > emu.maxTime then
     r = -1
   elseif p == "B" and oldP ~= "B" then
-    r = 3
+    r = 2
   end
   return r
 end

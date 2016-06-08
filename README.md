@@ -154,6 +154,25 @@ And then testing it as follows:
 
 I got 947 of 1000 wins. And if we stick to a single speed, we get 100% win rate.
 
+## Vanilla policy rollouts
+
+On-policy methods, such as policy gradiet methods, offer an alternative to the off-policy methods of Q-learning. The policy-network variety work by parameterizing the policy with a neural network such that the output of the nerual network is a probability distribution over actions and then sampling from this discrete distribution to play the game. After the game terminates, discounted rewards are computed for each step, and using backpropagation one can compute paramter updates, thereby allowing one to train the policy network.
+
+Unlike the temporal different algorithms, we cannot use a replay memory because older rollouts were played using a different policy, and thus are not samples from the policy under consideration and using them would mess up our estimate of the gradient.
+
+So instead we can roll out several policies and average the gradients. This can be parallelized and thus I use the term agent, but in this implementation the concurrent agetns are not truely parallel (as lua is generally limited to one thread).
+
+Without the replay memory, and using full trajectories, we need a larger number of episodes to get this to train:
+
+    ./policy-rollout.lua -mode train -rate 0.1 -episodes 50000 -entropy-regularization 0.3 \
+        -norm 4 -agents 100 -save policy-rollout.t7 -speeds 0.4,0.6 > policy-rollout.out
+
+One modification that seems to help is including a regularization term that is proportional to the entropy of the policy. I have also simplified the problem a bit by specifying only one speed for the boat. 
+
+    ./policy-rollout.lua -mode test -episodes 1000 -speeds 0.4,0.6 -save policy-rollout.t7 -quiet
+
+And we get 1000/1000 wins.
+
 # Watching the AI play
 
 To watch a trained model play, launch the lua backend using the `simulate` mode and specify your saved model:
