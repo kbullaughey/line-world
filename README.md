@@ -1,11 +1,12 @@
 # Overview
 
-This repo contains a Reinforcement Learning demo that was the basis for my own learning about Q-learning based RL. I built a very small grid-world game that can be played interactively or used as an emulator for producing training data for RL. I also provide a neural net implementation that can easily master this game.
+This repo contains a Reinforcement Learning demo that was the basis for my own learning about RL. I built a very small grid-world game that can be played interactively or used as an emulator for producing training data for RL. I also provide neural net implementations that can easily master this game.
 
-I followed the [Learning to play Atari][1] paper and taught myself RL from [Sutton's book][2].
+I started by learning about Q-learning followed the [Learning to play Atari][1] paper and taught myself RL from [Sutton's book][2]. I then tried out n-step Q-learning and policy-network methods based on [Asynchronous Methods for Deep Reinforcement Learning][3].
 
 [1]: http://arxiv.org/pdf/1312.5602v1.pdf
 [2]: https://webdocs.cs.ualberta.ca/~sutton/book/ebook/node1.html
+[3]: http://arxiv.org/pdf/1602.01783v1.pdf
 
 The machine learning part is written in Lua using Torch, and the game is made playable in a web browser using a javascript server running on node that talks to the Lua backend over websockets.
 
@@ -50,7 +51,7 @@ There are three possible terminal reward outcomes and one intermediate reward:
 0. -2: Falling in the water
 0. -1: Running out of time
 0. +10: Getting to the far dock
-0. +1: Getting on the boat (intermediate reward)
+0. +2: Getting on the boat (intermediate reward)
 
 At any given time step, there are three possible actions: left, right, and stay.
 
