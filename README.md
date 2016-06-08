@@ -182,14 +182,14 @@ In the actor critic on-policy method, we use a policy network like the vanilla p
 
 We can train with less data and using the default three speeds (0.3,0.5,0.6):
 
-    ./actor-critic.lua -mode train -rate 0.1 -episodes 20000 -entropy-regularization 0.2 \
+    ./actor-critic.lua -mode train -rate 0.1 -episodes 30000 -entropy-regularization 0.2 \
         -norm 4 -agents 100 > actor-critic.out
 
 And we can test the resulting trained model:
 
     ./actor-critic.lua -mode test -episodes 1000 -quiet
 
-And we get 790/1000 wins (with `-speeds 0.4,0.6` I got 997/1000 wins).
+And we get 948/1000 wins.
 
 # Watching the AI play
 
