@@ -41,11 +41,10 @@ cmd:option('-momentum', 0.5, 'momentum')
 cmd:option('-norm', 1, 'maximum update norm')
 cmd:option('-max-time', 75, 'maximum length of games in clock ticks.')
 cmd:option('-rate', 0.01, 'learning rate')
-cmd:option('-save', '', 'Filename to save model to (or read from when -mode test).')
+cmd:option('-save', 'policy-rollout.t7', 'Filename to save model to (or read from when -mode test).')
 cmd:option('-gamma', 0.90, 'discounting parameter, gamma')
 cmd:option('-L2-regularization', 1e-05, 'weight-decay regularization')
 cmd:option('-entropy-regularization', 0.01, 'weight for policy entropy regularization')
-cmd:option('-prefix', 'model', 'saved model prefix')
 cmd:option('-speeds', '0.3,0.5,0.7', 'different speeds of the boat')
 cmd:option('-frames', 6, 'number of frames to include')
 cmd:option('-update-every', 6, 'how often to perform updates')
@@ -332,10 +331,10 @@ function test(model, par)
 end
 
 if params.mode == "train" then
-  model = train(params)
   if params.save == '' then
-    params.save = params.prefix .. ".t7"
+    error("Must speficy -save <t7 file>")
   end
+  model = train(params)
   torch.save(params.save, model)
 elseif params.mode == "test" then
   if params.save == '' then

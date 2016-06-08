@@ -117,15 +117,8 @@ end
 -- If the reward is negative, the game is over.
 function emu.evolve(env, action)
   local z = {size=env.size, speed=env.speed, goal=env.goal}
-  -- Calculate the players new position.
-  z.player = env.player + (action-2)
-  if z.player <= 0 then
-    z.player = 1
-  elseif z.player > z.size then
-    z.player = z.size
-  end
   -- See if the player is on the boat.
-  local onBoat = emu.sceneLetters[env.scene[z.player]] == "B"
+  local onBoat = emu.sceneLetters[env.scene[env.player]] == "B"
   -- Calculate the new position of the boat.
   z.boat = env.boat + env.speed/emu.waterTiles(env)*env.direction
   -- Reflect the boat away from the edges if necessary, in which case
@@ -142,6 +135,15 @@ function emu.evolve(env, action)
   -- If the player is on the boat, update his position to the boat's new position.
   if onBoat then
     z.player = emu.boatTile(z)
+  else
+    z.player = env.player
+  end
+  -- Calculate the players new position.
+  z.player = z.player + (action-2)
+  if z.player <= 0 then
+    z.player = 1
+  elseif z.player > z.size then
+    z.player = z.size
   end
   -- Render the new scene.
   z.scene = emu.renderScene(z)

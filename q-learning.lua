@@ -41,13 +41,12 @@ cmd:option('-quiet', false, 'produce less output')
 cmd:option('-momentum', 0.5, 'momentum')
 cmd:option('-max-time', 75, 'maximum length of games in clock ticks.')
 cmd:option('-rate', 0.01, 'learning rate')
-cmd:option('-save', '', 'Filename to save model to (or read from when -mode test).')
+cmd:option('-save', 'q-learning.t7', 'Filename to save model to (or read from when -mode test).')
 cmd:option('-initial-epsilon', 0.1, 'initial random choice probability, epsilon')
 cmd:option('-final-epsilon', 0.02, 'final random choice probability, epsilon')
 cmd:option('-decay-epsilon-over', 1000, 'Number of episodes over which to decay epsilon')
 cmd:option('-gamma', 0.97, 'discounting parameter, gamma')
 cmd:option('-regularization', 1e-05, 'weight-decay regularization')
-cmd:option('-prefix', 'model', 'saved model prefix')
 cmd:option('-speeds', '0.3,0.5,0.7', 'different speeds of the boat')
 cmd:option('-frames', 6, 'number of frames to include')
 cmd:option('-update-every', 1, 'How often to update the parameters (int >= 1)')
@@ -351,10 +350,6 @@ function train(par)
         break
       end
     end
-    if i % 500 == 1 then
-      local fn = params.prefix .. "-" .. i .. ".t7"
-      torch.save(fn, model)
-    end
   end
   return model
 end
@@ -362,10 +357,10 @@ end
 if params.mode == 'play' then
   play()
 elseif params.mode == "train" then
-  model = train(params)
   if params.save == '' then
-    params.save = params.prefix .. ".t7"
+    error("Must speficy -save <t7 file>")
   end
+  model = train(params)
   torch.save(params.save, model)
 elseif params.mode == "test" then
   if params.save == '' then

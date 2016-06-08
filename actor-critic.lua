@@ -41,11 +41,10 @@ cmd:option('-momentum', 0.5, 'momentum')
 cmd:option('-norm', 1, 'maximum update norm')
 cmd:option('-max-time', 75, 'maximum length of games in clock ticks.')
 cmd:option('-rate', 0.01, 'learning rate')
-cmd:option('-save', '', 'Filename to save model to (or read from when -mode test).')
+cmd:option('-save', 'actor-critic.t7', 'Filename to save model to (or read from when -mode test).')
 cmd:option('-gamma', 0.90, 'discounting parameter, gamma')
 cmd:option('-L2-regularization', 1e-05, 'weight-decay regularization')
 cmd:option('-entropy-regularization', 0.01, 'weight for policy entropy regularization')
-cmd:option('-prefix', 'model', 'saved model prefix')
 cmd:option('-speeds', '0.3,0.5,0.7', 'different speeds of the boat')
 cmd:option('-frames', 6, 'number of frames to include')
 cmd:option('-update-every', 6, 'how often to perform updates')
@@ -215,7 +214,7 @@ function train(par)
             completed = completed + 1
             break
           end
---          local tStart = t
+          local tStart = t
           while true do
             if s[t].xt == nil then
               s[t].xt = emulator.phi(s)
@@ -231,29 +230,29 @@ function train(par)
             s[t].r = r
       
             print("> " .. s[t].picture .. " took " .. s[t].action .. " to " .. s[t+1].picture ..
-              ', reward: ' .. s[t].r .. " timestep " .. t)
+              ', reward: ' .. s[t].r .. " timestep " .. t .. " agent " .. identity)
             print(policy:view(1,-1))
       
             t = t + 1
---            if (s[t].gameOver or t-tStart == updateEvery) then
-            if (s[t].gameOver) then
+            if (s[t].gameOver or t-tStart == updateEvery) then
               -- Compute discounted rewards and accuulate gradients.
               local R = 0
---              if s[t].gameOver then
---                print("agent " .. identity .. " game over at " .. t)
---                R = 0
---              else
---                s[t].xt = emulator.phi(s)
---                s[t].policy, s[t].V = unpack(model.net:forward({s[t].xt, s[t].validActions))
---                R = s[t].V[1]
---              end
+              if s[t].gameOver then
+                print("agent " .. identity .. " game over at " .. t)
+                R = 0
+              else
+                s[t].xt = emulator.phi(s)
+                s[t].validActions = emulator.validActions(s[t])
+                s[t].policy, s[t].V = unpack(model.net:forward({s[t].xt, s[t].validActions}))
+                R = s[t].V[1]
+              end
               local advantage
-              for k=t-1,histLen,-1 do
+              for k=t-1,tStart,-1 do
                 R = s[k].r + gamma * R
                 advantage = R
                 gradTheta:zero()
                 local logPolicy, V = unpack(model.net:forward({s[k].xt, s[k].validActions}))
-                --advantage = R - s[k].V[1]
+                advantage = R - s[k].V[1]
                 print("R: " .. R .. ", V: " .. s[k].V[1], " advantage: " .. advantage)
                 -- Do one packward pass for the policy with the valueGrad zeroed out.
                 -- Accumulate the gradient in policyGradTheta
@@ -268,12 +267,11 @@ function train(par)
                 policyGradTheta:add(gradTheta)
                 -- And one backward pass for the value with the policyGrad zeroed out.
                 -- Accumulate the gradient in valueGradTheta
---                gradTheta:zero()
---                valueGrad[1] = -2 * advantage
---                valueGrad[1] = -2 * advantage
---                policyGrad:zero()
---                model.net:backward(s[k].xt, {policyGrad,valueGrad})
---                valueGradTheta:add(gradTheta)
+                gradTheta:zero()
+                valueGrad[1] = -2 * advantage
+                policyGrad:zero()
+                model.net:backward(s[k].xt, {policyGrad,valueGrad})
+                valueGradTheta:add(gradTheta)
               end
               gradCount = gradCount + 1
               break
@@ -306,11 +304,11 @@ function train(par)
     if whichAgent == numAgents then
       -- After a full pass through the agents we update our gradient
       policyGradTheta:div(numAgents)
-      --valueGradTheta:div(numAgents)
+      valueGradTheta:div(numAgents)
 
       -- Update the parameters
       weightDecayNormedUpdate(theta, policyGradTheta, wd, learningRate)
-      --weightDecayNormedUpdate(theta, valueGradTheta, wd, -learningRate)
+      weightDecayNormedUpdate(theta, valueGradTheta, wd, -learningRate)
       upCount = upCount + 1
       print("[" .. completed .. "," .. upCount .. "] |theta|: " .. theta:norm())
       gradTheta:zero()
@@ -363,7 +361,7 @@ end
 if params.mode == "train" then
   model = train(params)
   if params.save == '' then
-    params.save = params.prefix .. ".t7"
+    error("Must speficy -save <t7 file>")
   end
   torch.save(params.save, model)
 elseif params.mode == "test" then

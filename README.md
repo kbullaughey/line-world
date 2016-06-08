@@ -121,11 +121,11 @@ Training with these parameters results in decent play (~95% win rate):
 
 Testing can be done as follows:
 
-    ./q-learning.lua -mode test -episodes 1000 -save model.t7 -quiet
+    ./q-learning.lua -mode test -episodes 1000 -quiet
 
 One of the more challenging aspects of this game is that the speed varies. If a single speed is used, we get a 100% win rate (1000/1000):
 
-    ./q-learning.lua -mode train -episodes 2500 -prefix one-speed -speeds 0.5 > one-speed.out
+    ./q-learning.lua -mode train -episodes 2500 -save one-speed -speeds 0.5 > one-speed.out
     ./q-learning.lua -mode test -save one-speed.t7 -episodes 1000 -speeds 0.5 -quiet
 
 One challenge of one-step Q-learning is that until we have a pretty good
@@ -145,12 +145,12 @@ far dock, the reward is connected directly to actions taken in that step.
 I have also implemented n-step q-learning as described in
 [Asynchronous methods for deep reinforcement learning](https://arxiv.org/abs/1602.01783), Algorithm 2, although my method is not asynchronous.
 
-    ./n-step-q-learning.lua -mode train -save n-step -episodes 6000 -n 2 \
+    ./n-step-q-learning.lua -mode train -episodes 6000 -n 2 \
         -rate 0.02 > n-step-train.out
 
 And then testing it as follows:
 
-    ./n-step-q-learning.lua -mode test -save n-step.t7 -episodes 1000 -quiet
+    ./n-step-q-learning.lua -mode test -episodes 1000 -quiet
 
 I got 947 of 1000 wins. And if we stick to a single speed, we get 100% win rate.
 
@@ -165,13 +165,31 @@ So instead we can roll out several policies and average the gradients. This can 
 Without the replay memory, and using full trajectories, we need a larger number of episodes to get this to train:
 
     ./policy-rollout.lua -mode train -rate 0.1 -episodes 50000 -entropy-regularization 0.3 \
-        -norm 4 -agents 100 -save policy-rollout.t7 -speeds 0.4,0.6 > policy-rollout.out
+        -norm 4 -agents 100 -speeds 0.4,0.6 > policy-rollout.out
 
 One modification that seems to help is including a regularization term that is proportional to the entropy of the policy. I have also simplified the problem a bit by specifying only one speed for the boat. 
 
-    ./policy-rollout.lua -mode test -episodes 1000 -speeds 0.4,0.6 -save policy-rollout.t7 -quiet
+    ./policy-rollout.lua -mode test -episodes 1000 -speeds 0.4,0.6 -quiet
 
 And we get 1000/1000 wins.
+
+## Actor-critic
+
+In the actor critic on-policy method, we use a policy network like the vanilla policy rollout method above, but with two differences:
+
+1. In addition to our network emitting a policy probability distribution, we also emit an estimate of the value of the current state: `V(s)`. We use this value as a baseline, or critic, against which to compute an advantage `A = R - V(s)`. Optimizing this has lower variance that directly optimizing the return.
+2. We don't perform rollouts all the way to the end of an episode. Instead we perform a more limited rollout (e.g., 6) and use our value estimate as a proxy for the return at a non-terminal step.
+
+We can train with less data and using the default three speeds (0.3,0.5,0.6):
+
+    ./actor-critic.lua -mode train -rate 0.1 -episodes 20000 -entropy-regularization 0.2 \
+        -norm 4 -agents 100 > actor-critic.out
+
+And we can test the resulting trained model:
+
+    ./actor-critic.lua -mode test -episodes 1000 -quiet
+
+And we get 790/1000 wins (with `-speeds 0.4,0.6` I got 997/1000 wins).
 
 # Watching the AI play
 
